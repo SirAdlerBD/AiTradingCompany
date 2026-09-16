@@ -18,10 +18,11 @@ The roster and everything about cadence live in `config/desk.yaml`:
 - **gate and ledger**: the only writer of decisions; fills happen at the next
   run's quote, so there is no look-ahead.
 
-Data comes from two MCP servers that the orchestrator (code, not a model)
-calls: [saxo-mcp](https://github.com/SirAdlerBD/saxo-mcp) for quotes, bars
-and account state, and the FMP MCP server for fundamentals (phase 1+).
-Analysts will only ever see the frozen data pack; they never fetch.
+Data is fetched by the orchestrator (code, not a model):
+[saxo-mcp](https://github.com/SirAdlerBD/saxo-mcp) for quotes, bars and
+account state, and Financial Modeling Prep's REST API for fundamentals (its
+hosted MCP server needs OAuth, so the code calls the REST API it wraps).
+Analysts only ever see the frozen data pack; they never fetch.
 
 ## Layout
 
@@ -32,6 +33,7 @@ desk/config.py          pydantic config; Environment enum has exactly one member
 desk/mcp_client.py      thin client over mcp.Client (streamable HTTP or in-process)
 desk/guard.py           startup guard (env, account allowlist, trading hard block)
 desk/datapack.py        instrument resolution, bars, quote, indicators, stable hash
+desk/fmp.py             FMP REST client; fetches reduced to `keep` fields; `desk fmp-check`
 desk/indicators.py      deterministic technical indicators computed in code from the bars
 desk/schemas.py         AnalystView (pydantic) and the evidence check against the pack
 desk/llm.py             one call signature per role; OpenAI-compatible HTTP provider (Gemini)
@@ -42,7 +44,7 @@ desk/ledger.py          shadow book from fills; pending decisions filled at the 
 desk/benchmark.py       start capital bought into the index ETF on day 0, marked daily
 desk/db.py              SQLite schema plus column migrations; every table carries run_id
 desk/performance.py     shadow book vs benchmark from fills + frozen quotes; table and dated chart
-desk/cli.py             desk run [--decide|--no-decide] | performance | report | views | decisions | book | prompt | guard | discover-*
+desk/cli.py             desk run [--decide|--no-decide] | performance | report | views | decisions | book | prompt | guard | fmp-check | discover-*
 PLAN.md                 phases, exit criteria, status
 deploy/                 systemd unit + timer, install script, env template
 tests/                  fake saxo-mcp in process, same tool names and payload shapes
@@ -62,9 +64,10 @@ saxo-mcp's HTTP server must already be running under pm2 on
 3. `desk guard` must print `guard ok, SIM account <key>`.
 4. `desk run` twice on the same day, then `desk report`. The report exits 1 if
    any ticker has more than one data-pack hash on one day.
-5. Optional, for fundamentals: `desk discover-tools fmp`, fill in
-   `fmp_mcp.tools` and set `fmp_mcp.enabled: true`. Until then the pack carries
-   `fundamentals: {}`.
+5. Optional, for fundamentals: put `FMP_API_KEY` in the env file, run
+   `desk fmp-check MSFT`, fix any path or field it flags, set
+   `fmp_rest.enabled: true` and add `fundamentals_analyst` to
+   `pipeline.analysts`. Until then the pack carries `fundamentals: {}`.
 
 **After every `git pull`, rerun `sudo ./deploy/install.sh`.** The service runs
 the copy in `/opt/desk`, not your clone; the script rsyncs it and records the
@@ -180,12 +183,13 @@ listings are identified by symbol + MIC (the two halves of Saxo's `Symbol`)
 and matched client-side.
 
 Still assumed, check on first real run:
-- The FMP MCP URL, auth style and tool names (`fmp_mcp` is disabled by default).
 - Gemini's OpenAI-compatible endpoint (`/v1beta/openai/chat/completions`, bearer
   key, `response_format: json_object`, `usage.prompt_tokens`). The tests use a
   fake with that wire shape; the first real `desk run` confirms it.
-- The FMP MCP URL and auth style. Its tool names, `endpoint` argument and row
-  shapes were read from the live server; `fmp_mcp.fetch` mirrors them.
+- FMP REST path names (`profile`, `key-metrics-ttm`, `ratios-ttm`,
+  `financial-growth`, `price-target-consensus`). The row shapes were read
+  from FMP's own MCP tools, which wrap these paths; `desk fmp-check` confirms
+  the names and the `keep` fields in one call.
 - The first real trader call: the Anthropic SDK's `messages.parse` with
   `output_format=TraderProposal` and `output_config.effort`.
 - Saxo's infoprice `Quote.Mid` is present for stocks; if not, the code derives

@@ -23,53 +23,45 @@ saxo_mcp:
     price: get_instrument_price
     chart: get_chart_data
 
-# FMP MCP server (https://site.financialmodelingprep.com/developer/docs/mcp-server).
-# Its tools are grouped (company, statements, analyst, ...) and take an
-# `endpoint` argument; each `fetch` entry below becomes one section of the
-# data pack under fundamentals.<name>. `keep` is a field allowlist: profile and
-# TTM metrics carry intraday price/volume fields that would make two same-day
-# runs hash differently, so only slow-moving fields are kept. Add or remove
-# fetches freely; the fundamentals analyst sees whatever is here.
-fmp_mcp:
-  enabled: false                          # set true once url + auth_style are confirmed and FMP_API_KEY is in desk.env
-  # Confirm the endpoint from the VPS without editing this file, e.g.
-  #   desk discover-tools fmp --url https://mcp.financialmodelingprep.com/mcp --auth query
-  #   desk discover-tools fmp --url https://mcp.financialmodelingprep.com/mcp --auth bearer
-  # The first that lists tools (company, statements, analyst, ...) is the right pair.
-  # An unreachable FMP never fails a run: fundamentals are empty and the run row
-  # carries a warning (`desk report` shows it).
-  url: https://mcp.financialmodelingprep.com/mcp
-  auth_style: query                       # bearer | query | header
-  auth_env: FMP_API_KEY
-  auth_param: apikey
-  symbol_arg: symbol
+# Financial Modeling Prep over plain REST (its hosted MCP server needs OAuth,
+# so the code calls the REST API the MCP wraps). Each `fetch` becomes one
+# section of the data pack under fundamentals.<name>. `keep` is a field
+# allowlist: profile and TTM metrics carry intraday price/volume fields that
+# would make two same-day runs hash differently, so only slow-moving fields
+# are kept. Confirm the paths once with `desk fmp-check MSFT`; it prints what
+# each path returns and which keep fields are missing. An FMP failure never
+# fails a run: fundamentals are empty and the run row carries a warning.
+fmp_rest:
+  enabled: false                          # set true after `desk fmp-check` passes
+  base_url: https://financialmodelingprep.com/stable
+  api_key_env: FMP_API_KEY
+  api_key_param: apikey
+  symbol_param: symbol
+  retries: 2
+  backoff_s: 5
   fetch:
     profile:
-      tool: company
-      args: {endpoint: profile-symbol}
+      path: profile
       keep: [companyName, sector, industry, country, currency, exchange, beta, lastDividend, ipoDate, isActivelyTrading]
     metrics_ttm:
-      tool: statements
-      args: {endpoint: key-metrics-ttm}
+      path: key-metrics-ttm
       keep: [evToSalesTTM, evToEBITDATTM, evToFreeCashFlowTTM, netDebtToEBITDATTM, currentRatioTTM,
              returnOnEquityTTM, returnOnInvestedCapitalTTM, earningsYieldTTM, freeCashFlowYieldTTM,
              capexToRevenueTTM, researchAndDevelopementToRevenueTTM, incomeQualityTTM]
     ratios_ttm:
-      tool: statements
-      args: {endpoint: metrics-ratios-ttm}
+      path: ratios-ttm
       keep: [grossProfitMarginTTM, operatingProfitMarginTTM, netProfitMarginTTM, priceToEarningsRatioTTM,
              priceToEarningsGrowthRatioTTM, forwardPriceToEarningsGrowthRatioTTM, priceToBookRatioTTM,
              priceToSalesRatioTTM, priceToFreeCashFlowRatioTTM, debtToEquityRatioTTM, interestCoverageRatioTTM,
              dividendYieldTTM, dividendPayoutRatioTTM, freeCashFlowPerShareTTM, netIncomePerShareTTM]
     growth:
-      tool: statements
-      args: {endpoint: financial-statement-growth, period: annual}
+      path: financial-growth
+      params: {period: annual, limit: 3}
       limit: 3
       keep: [fiscalYear, revenueGrowth, grossProfitGrowth, operatingIncomeGrowth, netIncomeGrowth, epsdilutedGrowth,
              operatingCashFlowGrowth, freeCashFlowGrowth, debtGrowth, threeYRevenueGrowthPerShare, threeYNetIncomeGrowthPerShare]
     price_targets:
-      tool: analyst
-      args: {endpoint: price-target-consensus}
+      path: price-target-consensus
       keep: [targetLow, targetConsensus, targetMedian, targetHigh]
 
 universe:
@@ -150,7 +142,7 @@ roles:
     price_out_per_m: 10.00
 
 pipeline:
-  analysts: [technical_analyst]       # add fundamentals_analyst once fmp_mcp.enabled is true
+  analysts: [technical_analyst]       # add fundamentals_analyst once fmp_rest.enabled is true
   analysts_every_run: true            # false = analysts only on decision runs
   trader: trader                      # null = no decisions, no ledger (phase 0/1 behaviour)
   decision:
