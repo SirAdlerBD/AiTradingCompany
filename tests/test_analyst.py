@@ -24,7 +24,7 @@ class FakeGemini:
         ans = self.answers.pop(0)
         if isinstance(ans, int):
             return httpx.Response(ans, text="upstream trouble", request=httpx.Request("POST", url))
-        payload = {"id": "x", "model": "gemini-3.7-flash", "choices": [{"message": {"role": "assistant", "content": ans}}],
+        payload = {"id": "x", "model": (json or {}).get("model", "?"), "choices": [{"message": {"role": "assistant", "content": ans}}],
                    "usage": {"prompt_tokens": 1200, "completion_tokens": 300}}
         return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
 
@@ -76,13 +76,14 @@ async def test_valid_view_is_stored_with_evidence(cfg, monkeypatch):
     assert [e["field"] for e in ev] == ["indicators.last_close", "indicators.sma_200", "indicators.rsi_14"]
     c = con.execute("SELECT * FROM llm_calls WHERE id=?", (v["llm_call_id"],)).fetchone()
     assert c["error"] is None and c["attempt"] == 1 and c["tokens_in"] == 1200
-    assert abs(c["cost_usd"] - (1200 * 0.30 + 300 * 2.50) / 1e6) < 1e-9
+    role = cfg.roles["technical_analyst"]
+    assert abs(c["cost_usd"] - (1200 * role.price_in_per_m + 300 * role.price_out_per_m) / 1e6) < 1e-9
     assert "FIELDS" in c["prompt"] and "indicators.sma_200:" in c["prompt"]
-    # wire format: bearer key, json mode, system+user messages
+    # wire format: bearer key, json mode, system+user messages, the role's provider and model
     req = fake.requests[0]
-    assert req["url"].endswith("/v1beta/openai/chat/completions")
+    assert req["url"] == cfg.providers[role.provider].base_url.rstrip("/") + "/chat/completions"
     assert req["headers"]["Authorization"] == "Bearer k"
-    assert req["body"]["response_format"] == {"type": "json_object"} and req["body"]["model"] == "gemini-3.7-flash"
+    assert req["body"]["response_format"] == {"type": "json_object"} and req["body"]["model"] == role.model
     assert [m["role"] for m in req["body"]["messages"]] == ["system", "user"]
     assert cli.cmd_report(cfg) == 0
 

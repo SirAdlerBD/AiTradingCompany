@@ -32,7 +32,7 @@ saxo_mcp:
 # each path returns and which keep fields are missing. An FMP failure never
 # fails a run: fundamentals are empty and the run row carries a warning.
 fmp_rest:
-  enabled: false                          # set true after `desk fmp-check` passes
+  enabled: true                           # `desk fmp-check MSFT` passed 2026-09-16
   base_url: https://financialmodelingprep.com/stable
   api_key_env: FMP_API_KEY
   api_key_param: apikey
@@ -99,6 +99,14 @@ providers:
     api_key_env: GEMINI_API_KEY
     retries: 3
     backoff_s: 20          # 20s, 40s, 80s
+  openai:
+    kind: openai_compat
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+    retries: 3
+    backoff_s: 10
+    max_tokens_param: max_completion_tokens   # OpenAI's current models reject max_tokens
+    send_temperature: true                    # set false if the model rejects sampling parameters
   anthropic:
     kind: anthropic
     api_key_env: ANTHROPIC_API_KEY
@@ -117,12 +125,12 @@ roles:
   technical_analyst:
     kind: analyst
     prompt: technical
-    provider: gemini
-    model: gemini-3.7-flash
+    provider: openai              # moved off Gemini's free tier (recurring 503 "high demand")
+    model: gpt-5.6-luna
     temperature: 0.2
     max_tokens: 1500
-    price_in_per_m: 0.30      # TODO: verify against Google's current price list
-    price_out_per_m: 2.50
+    price_in_per_m: 1.00          # TODO: verify against OpenAI's current price list
+    price_out_per_m: 6.00
   fundamentals_analyst:
     kind: analyst
     prompt: fundamentals
@@ -142,7 +150,7 @@ roles:
     price_out_per_m: 10.00
 
 pipeline:
-  analysts: [technical_analyst]       # add fundamentals_analyst once fmp_rest.enabled is true
+  analysts: [technical_analyst, fundamentals_analyst]
   analysts_every_run: true            # false = analysts only on decision runs
   trader: trader                      # null = no decisions, no ledger (phase 0/1 behaviour)
   decision:

@@ -80,6 +80,10 @@ class Provider(BaseModel):
     api_key_env: str                    # name of the env var, never the key
     retries: int = Field(default=3, ge=0, le=10)     # on 429/5xx/network
     backoff_s: float = Field(default=20.0, ge=0)     # first wait; doubles each retry
+    # openai_compat request quirks: OpenAI's newer models take max_completion_tokens
+    # and some reject sampling parameters; Gemini's endpoint takes the classic names.
+    max_tokens_param: str = "max_tokens"
+    send_temperature: bool = True
 
 
 class Role(BaseModel):

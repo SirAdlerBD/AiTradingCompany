@@ -12,6 +12,7 @@ from typing import Any
 
 from . import __version__, analysts, benchmark, config as cfgmod, datapack, fmp as fmpmod, guard, ledger, performance, risk, trader
 from .llm import LlmClient, LlmError, Router, list_models
+from .log import Log, as_log
 from .schemas import Stop, flatten
 from datetime import date as _date
 from .config import Config
@@ -137,8 +138,13 @@ def gate(cfg: Config, con, run_id: str, ticker: str, proposal_id: int, verdict: 
         (run_id, ticker, proposal_id, vid, action, verdict.adjusted_weight, now(), status, source),
     ).lastrowid
     con.commit()
+    log = as_log(log)
     log(f"{ticker}: risk {verdict.verdict}" + (f" ({verdict.rule_fired})" if verdict.rule_fired else "")
         + f" -> decision {did} {action} w={verdict.adjusted_weight:.3f} [{status}]")
+    log.block(f"risk on {ticker}: {verdict.verdict.upper()}" + (f", rule {verdict.rule_fired} fired" if verdict.rule_fired else ", no rule fired"),
+              [f"proposal: {p['action']} weight {verdict.original_weight:.3f} -> final {verdict.adjusted_weight:.3f}",
+               "rules checked: " + ", ".join(verdict.rules_checked)]
+              + [f"  {k} = {v}" for k, v in verdict.numbers.items()])
     return did
 
 
@@ -192,6 +198,7 @@ async def run_once(cfg: Config, con, *, saxo_inproc: Any | None = None, fmp_clie
     Returns run_id; raises GuardFailure or the underlying error. A rejected model
     answer never fails the run; it shows up in `desk report`."""
     today = today or _date.today()
+    log = as_log(log)
     rules = risk.load_rules(cfg.path(cfg.risk.rules_file)) if cfg.pipeline.trader else None
     run_id = uuid.uuid4().hex[:12]
     con.execute(
@@ -278,6 +285,8 @@ async def run_once(cfg: Config, con, *, saxo_inproc: Any | None = None, fmp_clie
                 f"{len(snap['positions'])} position(s)")
         con.execute("UPDATE runs SET status='ok', finished_at=? WHERE run_id=?", (now(), run_id))
         con.commit()
+        if log.calls:
+            log(log.summary())
         return run_id
     except guard.GuardFailure as e:
         con.execute("UPDATE runs SET status='guard_failed', finished_at=?, error=? WHERE run_id=?",
@@ -291,9 +300,9 @@ async def run_once(cfg: Config, con, *, saxo_inproc: Any | None = None, fmp_clie
         raise
 
 
-async def cmd_run(cfg: Config, decide: bool | None = None) -> None:
+async def cmd_run(cfg: Config, decide: bool | None = None, verbose: bool = False) -> None:
     con = connect(cfg.storage.db_path)
-    run_id = await run_once(cfg, con, decide=decide)
+    run_id = await run_once(cfg, con, decide=decide, log=Log(verbose=verbose))
     print(f"run {run_id} ok")
 
 
@@ -504,6 +513,8 @@ def main(argv: list[str] | None = None) -> None:
     g = r.add_mutually_exclusive_group()
     g.add_argument("--decide", action="store_true", help="run the trader today regardless of the cadence")
     g.add_argument("--no-decide", action="store_true", help="skip the trader today regardless of the cadence")
+    r.add_argument("-v", "--verbose", action="store_true",
+                   help="print full analyst views, the trader's reasoning, every risk check and per-call usage")
     sub.add_parser("book", help="current shadow book and pending decisions")
     pf = sub.add_parser("performance", help="shadow book vs benchmark, day by day, plus a dated chart")
     pf.add_argument("--min-days", type=int, default=10, help="trading days needed before the verdict is shown as meaningful")
@@ -537,7 +548,7 @@ def main(argv: list[str] | None = None) -> None:
         elif a.cmd == "guard":
             asyncio.run(cmd_guard(cfg))
         elif a.cmd == "run":
-            asyncio.run(cmd_run(cfg, decide=True if a.decide else False if a.no_decide else None))
+            asyncio.run(cmd_run(cfg, decide=True if a.decide else False if a.no_decide else None, verbose=a.verbose))
         elif a.cmd == "book":
             cmd_book(cfg)
         elif a.cmd == "performance":

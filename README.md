@@ -9,8 +9,11 @@ decision. Nothing is ever sent to the broker. See `PLAN.md` for the phases.
 
 The roster and everything about cadence live in `config/desk.yaml`:
 
-- **analysts** (Gemini Flash): `technical_analyst` and `fundamentals_analyst`,
-  each with one question and evidence validated against the pack.
+- **analysts**: `technical_analyst` (OpenAI gpt-5.6-luna) and
+  `fundamentals_analyst` (Gemini Flash), each with one question and evidence
+  validated against the pack. Providers are per role in config; any
+  OpenAI-compatible endpoint works, with per-provider request quirks
+  (`max_tokens_param`, `send_temperature`).
 - **trader** (Claude): weighs the views, names the winning and rejected
   arguments, proposes an action, a target weight and a stop that code can check.
 - **risk**: not a model. `config/risk_rules.yaml` limits evaluated in
@@ -74,6 +77,14 @@ the copy in `/opt/desk`, not your clone; the script rsyncs it and records the
 deployed commit in `/opt/desk/COMMIT`. Every `desk` command prints the version,
 commit and config path it is using on its first line, so a stale copy is
 visible at a glance.
+
+`desk run --verbose` (or `-v`) prints, in addition to the compact lines the
+timer logs: every analyst view in full (thesis, each evidence item with its
+field, value and reasoning, the wrong-if condition), the trader's reasoning
+(which views it weighed, what it sided with, the winning and rejected
+arguments, the stop), every risk check with the numbers it saw even when
+nothing fired, and per-call token counts with estimated cost, then a run
+total. Nothing recorded in SQLite changes with the flag.
 
 Running by hand as the service user:
 
