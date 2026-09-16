@@ -101,6 +101,21 @@ class OpenAICompatClient:
         raise LlmError(f"{prov.name} call failed: {last}")
 
 
+def list_models(prov: Provider, get: Callable[..., httpx.Response] | None = None) -> list[str]:
+    """GET {base_url}/models. Used by `desk discover-models` to check a pin is still served."""
+    key = os.environ.get(prov.api_key_env)
+    if not key:
+        raise LlmError(f"{prov.api_key_env} is not set")
+    url = prov.base_url.rstrip("/") + "/models"
+    headers = {"Authorization": f"Bearer {key}"}
+    resp = (get or httpx.get)(url, headers=headers, timeout=30.0)
+    if resp.status_code != 200:
+        raise LlmError(f"{prov.name} HTTP {resp.status_code}: {resp.text[:300]}")
+    data = resp.json().get("data", [])
+    names = [str(m.get("id", "")).removeprefix("models/") for m in data if isinstance(m, dict)]
+    return sorted(n for n in names if n)
+
+
 def parse_json_object(text: str) -> dict[str, Any]:
     """Tolerate a ```json fence or leading prose; the payload must still be one JSON object."""
     s = text.strip()

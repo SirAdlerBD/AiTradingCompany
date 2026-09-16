@@ -73,13 +73,20 @@ providers:
   # anthropic is added in phase 2 with the trader (Messages API adapter).
 
 # One entry per role. Prices are USD per 1M tokens and only feed the cost column.
+# Models are pinned to an explicit version on purpose: llm_calls.model and the
+# config hash record exactly which model produced each view, and a bump is a
+# deliberate, visible change. Aliases like gemini-flash-latest would switch the
+# model underneath a multi-week comparison without a trace. When a pinned
+# model is retired the run logs "HTTP 404 ... no longer available" in
+# llm_calls.error and `desk report` shows it; `desk discover-models gemini`
+# lists what the provider currently serves.
 roles:
   technical_analyst:
     provider: gemini
-    model: gemini-2.5-flash
+    model: gemini-3.7-flash
     temperature: 0.2
     max_tokens: 1500
-    price_in_per_m: 0.30
+    price_in_per_m: 0.30      # TODO: verify against Google's current price list
     price_out_per_m: 2.50
   # phase 3: fundamentals_analyst, moderator (gemini); phase 2: trader (anthropic)
 
