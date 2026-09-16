@@ -1,7 +1,8 @@
-# Deterministic risk rules. Evaluated by code in desk/risk.py (phase 2).
+# Deterministic risk rules. Evaluated by code in desk/risk.py; no model is involved.
 # Each rule has a stable id; verdicts cite the id and the numbers, nothing else.
-# Bump `version` on any change; runs record the version they used.
-version: 1
+# Every limit is a fraction of portfolio value unless stated. Set enabled: false
+# to switch a rule off; bump `version` on any change (runs record the version).
+version: 2
 
 rules:
   - id: MAX_POSITION_PCT
@@ -10,7 +11,9 @@ rules:
     on_breach: resize        # resize | veto
 
   - id: MAX_SECTOR_PCT
-    description: Combined exposure to one FMP sector may not exceed this share.
+    description: >
+      Combined exposure to one sector (fundamentals.profile.sector from FMP) may
+      not exceed this share. Not evaluated when the sector is unknown.
     limit: 0.35
     on_breach: resize
 
@@ -21,30 +24,31 @@ rules:
 
   - id: MAX_CORR_TO_BOOK
     description: >
-      Reject a new position whose 60-day daily-return correlation with the
-      current book exceeds the limit. Needs return history in price_history.
+      Reject a new or larger position whose daily-return correlation with the
+      weighted book over lookback_days exceeds the limit. Needs price_history.
     lookback_days: 60
     limit: 0.85
     on_breach: veto
 
   - id: PORTFOLIO_DD_HALT
     description: >
-      If shadow-portfolio drawdown from peak exceeds the limit, veto all new
-      longs until drawdown recovers above `resume_at`. Exits still allowed.
+      If the shadow book's drawdown from peak exceeds the limit, veto all new or
+      larger longs until drawdown recovers above resume_at. Exits still allowed.
     limit: 0.12
     resume_at: 0.08
     on_breach: veto
 
   - id: MAX_WEEKLY_TURNOVER
-    description: Sum of |trade value| this ISO week may not exceed this share.
+    description: Sum of |trade value| over window_days may not exceed this share.
+    window_days: 7
     limit: 0.30
     on_breach: veto
 
   - id: MAX_HOLDING_DAYS
-    description: Time stop. Positions older than this are force-proposed for exit.
+    description: Time stop. Positions older than this are exited by the daily monitor.
     limit: 120
     on_breach: exit
 
   - id: LONG_ONLY
-    description: Any proposal with action=short is vetoed. Not configurable.
+    description: Any proposal with action=short is vetoed. The schema does not even allow it.
     on_breach: veto

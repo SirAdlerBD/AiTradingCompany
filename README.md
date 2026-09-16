@@ -1,15 +1,22 @@
-# desk — phase 1
+# desk — phase 2
 
 A multi-agent trading research desk that runs against a Saxo **SIM** account
 only. A scheduled batch job (systemd timer) starts, passes a startup guard,
 freezes one hashed data pack per ticker, asks each configured analyst for a
-view on that pack, snapshots the benchmark, writes SQLite, and exits.
+view, fills yesterday's decisions in a shadow ledger, checks stops, and on a
+decision day asks the trader, runs the risk rules in code, and logs a
+decision. Nothing is ever sent to the broker. See `PLAN.md` for the phases.
 
-Phase 0 (done) was the plumbing with no model calls. Phase 1 adds one
-technical analyst (Gemini Flash) whose output is validated against the data
-pack: a view is stored only if it is schema-valid and every evidence item
-names a real field of the pack and quotes its value. Nothing decides or
-trades yet; that is phase 2.
+The roster and everything about cadence live in `config/desk.yaml`:
+
+- **analysts** (Gemini Flash): `technical_analyst` and `fundamentals_analyst`,
+  each with one question and evidence validated against the pack.
+- **trader** (Claude): weighs the views, names the winning and rejected
+  arguments, proposes an action, a target weight and a stop that code can check.
+- **risk**: not a model. `config/risk_rules.yaml` limits evaluated in
+  `desk/risk.py`; every verdict cites a rule id and the numbers it saw.
+- **gate and ledger**: the only writer of decisions; fills happen at the next
+  run's quote, so there is no look-ahead.
 
 Data comes from two MCP servers that the orchestrator (code, not a model)
 calls: [saxo-mcp](https://github.com/SirAdlerBD/saxo-mcp) for quotes, bars
@@ -29,9 +36,13 @@ desk/indicators.py      deterministic technical indicators computed in code from
 desk/schemas.py         AnalystView (pydantic) and the evidence check against the pack
 desk/llm.py             one call signature per role; OpenAI-compatible HTTP provider (Gemini)
 desk/analysts.py        analyst step: prompt, call, validate, feed rejections back once, store
+desk/trader.py          trader prompt, TraderProposal validation, synthetic exit proposals
+desk/risk.py            rule engine over config/risk_rules.yaml; drawdown hysteresis; correlation
+desk/ledger.py          shadow book from fills; pending decisions filled at the next mark; snapshots
 desk/benchmark.py       start capital bought into the index ETF on day 0, marked daily
 desk/db.py              SQLite schema plus column migrations; every table carries run_id
-desk/cli.py             desk discover-tools | guard | run | report | views | prompt
+desk/cli.py             desk run [--decide|--no-decide] | report | views | decisions | book | prompt | guard | discover-*
+PLAN.md                 phases, exit criteria, status
 deploy/                 systemd unit + timer, install script, env template
 tests/                  fake saxo-mcp in process, same tool names and payload shapes
 ```
@@ -45,7 +56,8 @@ saxo-mcp's HTTP server must already be running under pm2 on
    user, `/opt/desk`, `/var/lib/desk`, a venv, and enables the timer.
 2. Fill `/etc/desk/desk.env`: the saxo-mcp `MCP_ACCESS_TOKEN` as
    `SAXO_SIM_MCP_TOKEN`, every SIM `AccountKey` from `get_account_summary`
-   as `SAXO_SIM_ACCOUNT_KEYS`, and a Google AI Studio key as `GEMINI_API_KEY`.
+   as `SAXO_SIM_ACCOUNT_KEYS`, a Google AI Studio key as `GEMINI_API_KEY`,
+   and an Anthropic key as `ANTHROPIC_API_KEY`.
 3. `desk guard` must print `guard ok, SIM account <key>`.
 4. `desk run` twice on the same day, then `desk report`. The report exits 1 if
    any ticker has more than one data-pack hash on one day.
@@ -93,6 +105,30 @@ Cost: one Gemini Flash call per ticker per run, about 2k tokens in and 400
 out, well under a cent. The free tier covers it; its terms allow prompt use for
 training, which is acceptable for public SIM data.
 
+## How a decision is made (phase 2)
+
+Every run, after the packs and views: pending decisions from the previous run
+fill at today's mark (fee from config), each open position's stop and the
+time stop are evaluated, and exits are queued through the gate. On a decision
+day (`pipeline.decision`: a weekday list and a minimum gap, or `desk run
+--decide`), per ticker: the trader gets FIELDS, the analyst views, the book and
+the risk limits, and answers with a `TraderProposal` (action, target weight,
+winning and rejected arguments, which analysts it sided with, a stop as
+`{field, op, value}`). Code validates it (a stop must cite a numeric field and
+not be breached today), the risk rules pass, resize or veto it, and the gate
+writes a pending decision. `desk decisions` prints the whole chain per
+decision: proposal, verdict with numbers, decision, fill.
+
+The trader runs on Claude through the Anthropic SDK with structured output.
+Effort and model are per role in config; no sampling parameters are sent.
+
+## Phase 2 exit criteria
+
+- Any decision is reconstructible from the DB alone (`desk decisions`).
+- The shadow book is marked daily against the benchmark for two weeks
+  (`desk report` shows both, plus turnover, verdict counts, holding period and
+  which analyst the trader sided with).
+
 ## Phase 1 exit criteria
 
 - Five consecutive daily runs each store a valid view per ticker: `desk
@@ -133,6 +169,10 @@ Still assumed, check on first real run:
 - Gemini's OpenAI-compatible endpoint (`/v1beta/openai/chat/completions`, bearer
   key, `response_format: json_object`, `usage.prompt_tokens`). The tests use a
   fake with that wire shape; the first real `desk run` confirms it.
+- The FMP MCP URL and auth style. Its tool names, `endpoint` argument and row
+  shapes were read from the live server; `fmp_mcp.fetch` mirrors them.
+- The first real trader call: the Anthropic SDK's `messages.parse` with
+  `output_format=TraderProposal` and `output_config.effort`.
 - Saxo's infoprice `Quote.Mid` is present for stocks; if not, the code derives
   mid from bid/ask, then falls back to `LastTraded`.
 

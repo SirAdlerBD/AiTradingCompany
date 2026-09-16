@@ -157,6 +157,27 @@ MIGRATIONS: list[tuple[str, str, str]] = [
     ("analyst_views", "horizon_days", "INTEGER"),
     ("analyst_views", "created_at", "TEXT"),
     ("runs", "views_expected", "INTEGER"),          # tickers x analysts configured for that run
+    ("runs", "decided", "INTEGER"),                 # 1 if the trader ran in this run
+    ("runs", "run_date", "TEXT"),                   # the business date the run marked (YYYY-MM-DD)
+    ("trader_proposals", "sided_with_json", "TEXT"),
+    ("trader_proposals", "stop_json", "TEXT"),      # {field, op, value} evaluated by code daily
+    ("trader_proposals", "horizon_days", "INTEGER"),
+    ("trader_proposals", "confidence", "REAL"),
+    ("trader_proposals", "source", "TEXT"),         # trader | stop | time_stop
+    ("trader_proposals", "created_at", "TEXT"),
+    ("risk_verdicts", "run_id", "TEXT"),
+    ("risk_verdicts", "ticker", "TEXT"),
+    ("risk_verdicts", "risk_version", "INTEGER"),
+    ("risk_verdicts", "created_at", "TEXT"),
+    ("decisions", "status", "TEXT"),                # pending | filled | noop | cancelled
+    ("decisions", "source", "TEXT"),                # trader | stop | time_stop
+    ("decisions", "filled_at", "TEXT"),
+    ("fills", "fee", "REAL"),
+    ("fills", "value", "REAL"),                     # signed: +buy, -sell, before fees
+    ("fills", "run_id", "TEXT"),
+    ("portfolio_snapshots", "run_id", "TEXT"),
+    ("portfolio_snapshots", "peak_value", "REAL"),
+    ("portfolio_snapshots", "drawdown", "REAL"),
 ]
 
 

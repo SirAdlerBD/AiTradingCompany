@@ -78,3 +78,62 @@ def check_evidence(view: AnalystView, fields: dict[str, Any]) -> list[str]:
         if not _same(fields[e.field], e.value):
             problems.append(f"evidence[{i}].value {e.value!r} does not match FIELDS[{e.field!r}] = {fields[e.field]!r}")
     return problems
+
+
+Action = Literal["long", "hold", "exit", "none"]
+
+
+class Stop(BaseModel):
+    """A stop the code can evaluate every day: FIELDS[field] <op> value."""
+    field: str = Field(min_length=1, description="a FIELDS key with a numeric value")
+    op: Literal["<", ">"]
+    value: float
+
+    def triggered(self, fields: dict[str, Any]) -> bool | None:
+        v = fields.get(self.field)
+        if not isinstance(v, (int, float)) or isinstance(v, bool):
+            return None
+        return v < self.value if self.op == "<" else v > self.value
+
+
+class RejectedArgument(BaseModel):
+    role: str = Field(min_length=1)
+    argument: str = Field(min_length=3, max_length=300)
+    why_rejected: str = Field(min_length=3, max_length=300)
+
+
+class TraderProposal(BaseModel):
+    action: Action
+    target_weight: float = Field(ge=0.0, le=1.0, description="target share of portfolio value; 0 for exit/none")
+    winning_argument: str = Field(min_length=10, max_length=900)
+    rejected_arguments: list[RejectedArgument] = Field(default_factory=list, max_length=8)
+    sided_with: list[str] = Field(default_factory=list, description="analyst roles whose view carried the decision")
+    stop: Stop | None = None
+    horizon_days: int = Field(ge=5, le=365)
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
+def check_proposal(p: TraderProposal, fields: dict[str, Any], has_position: bool, analyst_roles: list[str]) -> list[str]:
+    """Structural problems a schema cannot express. Empty list = accepted."""
+    problems = []
+    if p.action in ("long", "hold"):
+        if p.target_weight <= 0:
+            problems.append(f"action {p.action} needs target_weight > 0")
+        if p.stop is None:
+            problems.append(f"action {p.action} needs a stop")
+    if p.action in ("exit", "none") and p.target_weight != 0:
+        problems.append(f"action {p.action} needs target_weight 0")
+    if p.action in ("hold", "exit") and not has_position:
+        problems.append(f"action {p.action} but there is no open position; use long or none")
+    if p.stop is not None:
+        if p.stop.field not in fields:
+            problems.append(f"stop.field {p.stop.field!r} is not a FIELDS key")
+        elif not isinstance(fields[p.stop.field], (int, float)) or isinstance(fields[p.stop.field], bool):
+            problems.append(f"stop.field {p.stop.field!r} is not numeric")
+        elif p.stop.triggered(fields):
+            problems.append(f"stop {p.stop.field} {p.stop.op} {p.stop.value} is already triggered today "
+                            f"(value {fields[p.stop.field]})")
+    unknown = [r for r in p.sided_with if r not in analyst_roles]
+    if unknown:
+        problems.append(f"sided_with names unknown analyst(s) {unknown}; known: {analyst_roles}")
+    return problems

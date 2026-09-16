@@ -24,22 +24,47 @@ saxo_mcp:
     chart: get_chart_data
 
 # FMP MCP server (https://site.financialmodelingprep.com/developer/docs/mcp-server).
-# Disabled until you have run `desk discover-tools fmp` and filled in the tool
-# names below; while disabled the data pack carries fundamentals: {}.
+# Its tools are grouped (company, statements, analyst, ...) and take an
+# `endpoint` argument; each `fetch` entry below becomes one section of the
+# data pack under fundamentals.<name>. `keep` is a field allowlist: profile and
+# TTM metrics carry intraday price/volume fields that would make two same-day
+# runs hash differently, so only slow-moving fields are kept. Add or remove
+# fetches freely; the fundamentals analyst sees whatever is here.
 fmp_mcp:
-  enabled: false
-  url: https://mcp.financialmodelingprep.com/mcp   # TODO: confirm against the FMP docs
-  auth_style: query                        # bearer | query | header (FMP: check docs)
+  enabled: false                          # set true once url + FMP_API_KEY are in place
+  url: https://mcp.financialmodelingprep.com/mcp   # TODO: confirm against the FMP docs / your connector
+  auth_style: query                       # bearer | query | header
   auth_env: FMP_API_KEY
-  auth_param: apikey                       # query parameter / header name when style != bearer
-  symbol_arg: symbol                       # argument name the FMP tools take for the ticker
-  tools:
-    profile: ""
-    ratios: ""
-    growth: ""
-    income: ""
-    balance: ""
-    peers: ""
+  auth_param: apikey
+  symbol_arg: symbol
+  fetch:
+    profile:
+      tool: company
+      args: {endpoint: profile-symbol}
+      keep: [companyName, sector, industry, country, currency, exchange, beta, lastDividend, ipoDate, isActivelyTrading]
+    metrics_ttm:
+      tool: statements
+      args: {endpoint: key-metrics-ttm}
+      keep: [evToSalesTTM, evToEBITDATTM, evToFreeCashFlowTTM, netDebtToEBITDATTM, currentRatioTTM,
+             returnOnEquityTTM, returnOnInvestedCapitalTTM, earningsYieldTTM, freeCashFlowYieldTTM,
+             capexToRevenueTTM, researchAndDevelopementToRevenueTTM, incomeQualityTTM]
+    ratios_ttm:
+      tool: statements
+      args: {endpoint: metrics-ratios-ttm}
+      keep: [grossProfitMarginTTM, operatingProfitMarginTTM, netProfitMarginTTM, priceToEarningsRatioTTM,
+             priceToEarningsGrowthRatioTTM, forwardPriceToEarningsGrowthRatioTTM, priceToBookRatioTTM,
+             priceToSalesRatioTTM, priceToFreeCashFlowRatioTTM, debtToEquityRatioTTM, interestCoverageRatioTTM,
+             dividendYieldTTM, dividendPayoutRatioTTM, freeCashFlowPerShareTTM, netIncomePerShareTTM]
+    growth:
+      tool: statements
+      args: {endpoint: financial-statement-growth, period: annual}
+      limit: 3
+      keep: [fiscalYear, revenueGrowth, grossProfitGrowth, operatingIncomeGrowth, netIncomeGrowth, epsdilutedGrowth,
+             operatingCashFlowGrowth, freeCashFlowGrowth, debtGrowth, threeYRevenueGrowthPerShare, threeYNetIncomeGrowthPerShare]
+    price_targets:
+      tool: analyst
+      args: {endpoint: price-target-consensus}
+      keep: [targetLow, targetConsensus, targetMedian, targetHigh]
 
 universe:
   # Long-only US/EU large caps. A listing is identified by symbol + mic, the
@@ -64,32 +89,72 @@ benchmark:
 storage:
   db_path: /var/lib/desk/desk.sqlite
 
-# Model providers. All speak the OpenAI chat-completions format; the key comes
-# from the named env var. No provider has tools: analysts reason, they never fetch.
+# Model providers. `openai_compat` providers speak the OpenAI chat-completions
+# format (Gemini exposes it; Groq and OpenAI do natively). `anthropic` uses the
+# official SDK with structured output. Keys come from the named env vars.
+# retries/backoff apply to 429/5xx/network errors (free tiers throw 503s).
 providers:
   gemini:
+    kind: openai_compat
     base_url: https://generativelanguage.googleapis.com/v1beta/openai
     api_key_env: GEMINI_API_KEY
-  # anthropic is added in phase 2 with the trader (Messages API adapter).
+    retries: 3
+    backoff_s: 20          # 20s, 40s, 80s
+  anthropic:
+    kind: anthropic
+    api_key_env: ANTHROPIC_API_KEY
+    retries: 2
 
-# One entry per role. Prices are USD per 1M tokens and only feed the cost column.
-# Models are pinned to an explicit version on purpose: llm_calls.model and the
-# config hash record exactly which model produced each view, and a bump is a
-# deliberate, visible change. Aliases like gemini-flash-latest would switch the
-# model underneath a multi-week comparison without a trace. When a pinned
-# model is retired the run logs "HTTP 404 ... no longer available" in
-# llm_calls.error and `desk report` shows it; `desk discover-models gemini`
-# lists what the provider currently serves.
+# The roster. Add a role here and list it in pipeline.* to put it to work.
+#   kind: analyst  -> produces a view per ticker (prompt: technical | fundamentals | a prompt_file)
+#   kind: trader   -> weighs the views and proposes; exactly one, named in pipeline.trader
+# The risk layer is code (desk/risk.py + config/risk_rules.yaml), on purpose: a
+# verdict must be reproducible from numbers, never from a model's mood.
+# Models are pinned to explicit versions on purpose: llm_calls.model and the
+# config hash record exactly which model produced each output, and a bump is a
+# deliberate, visible change. `desk discover-models <provider>` lists what a
+# provider currently serves.
 roles:
   technical_analyst:
+    kind: analyst
+    prompt: technical
     provider: gemini
     model: gemini-3.7-flash
     temperature: 0.2
     max_tokens: 1500
     price_in_per_m: 0.30      # TODO: verify against Google's current price list
     price_out_per_m: 2.50
-  # phase 3: fundamentals_analyst, moderator (gemini); phase 2: trader (anthropic)
+  fundamentals_analyst:
+    kind: analyst
+    prompt: fundamentals
+    provider: gemini
+    model: gemini-3.7-flash
+    temperature: 0.2
+    max_tokens: 1500
+    price_in_per_m: 0.30
+    price_out_per_m: 2.50
+  trader:
+    kind: trader
+    provider: anthropic
+    model: claude-sonnet-5
+    max_tokens: 4000
+    effort: medium            # low | medium | high | xhigh | max
+    price_in_per_m: 2.00
+    price_out_per_m: 10.00
 
 pipeline:
-  analysts: [technical_analyst]   # [] reproduces phase 0 (no model calls)
-  max_attempts: 2                 # a rejected answer is sent back once with the reasons
+  analysts: [technical_analyst]       # add fundamentals_analyst once fmp_mcp.enabled is true
+  analysts_every_run: true            # false = analysts only on decision runs
+  trader: trader                      # null = no decisions, no ledger (phase 0/1 behaviour)
+  decision:
+    weekdays: [Mon]                   # days the trader runs; [] = every run
+    min_days_between: 0               # extra guard, e.g. 7 for "at most weekly" with weekdays []
+  max_attempts: 2                     # a rejected model answer is sent back once with the reasons
+
+risk:
+  rules_file: config/risk_rules.yaml  # relative to the repo root
+
+ledger:
+  fee_bps: 5                          # per fill, on traded value
+  allow_fractional: true              # the shadow book may hold fractional shares
+  mark: mid                           # mid | last: the quote used for fills and marking
