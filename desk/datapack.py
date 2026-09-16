@@ -124,9 +124,7 @@ async def build(cfg: Config, saxo: McpClient, fmp: McpClient | None, con: sqlite
         "fundamentals": {},
     }
     if fmp is not None:
-        for key, tool in cfg.fmp_mcp.tools.items():
-            if tool:
-                stable["fundamentals"][key] = await fmp.call(tool, {cfg.fmp_mcp.symbol_arg: t.symbol})
+        stable["fundamentals"] = await fetch_fundamentals(cfg, fmp, t.symbol)
 
     return {
         "stable": stable,
@@ -193,3 +191,29 @@ def _f(v: Any) -> float | None:
         return None if v is None else float(v)
     except (TypeError, ValueError):
         return None
+
+
+async def fetch_fundamentals(cfg: Config, fmp: McpClient, symbol: str) -> dict[str, Any]:
+    """Run every configured FMP fetch and reduce each result to its `keep` fields.
+
+    FMP tools are grouped (company, statements, analyst...) and take an `endpoint`
+    argument; results are lists of row dicts. `keep` matters for the stable hash:
+    profile and TTM metrics carry intraday price/volume fields that would make two
+    same-day runs differ, so the config keeps only the slow-moving fields.
+    """
+    out: dict[str, Any] = {}
+    for name, spec in cfg.fmp_mcp.fetch.items():
+        args = dict(spec.args)
+        args[cfg.fmp_mcp.symbol_arg] = symbol
+        raw = await fmp.call(spec.tool, args)
+        out[name] = reduce_rows(raw, spec.keep, spec.limit)
+    return out
+
+
+def reduce_rows(raw: Any, keep: list[str], limit: int | None) -> Any:
+    rows = raw if isinstance(raw, list) else [raw] if isinstance(raw, dict) else []
+    if limit is not None:
+        rows = rows[:limit]
+    if keep:
+        rows = [{k: r.get(k) for k in keep if isinstance(r, dict)} for r in rows]
+    return rows[0] if len(rows) == 1 else rows

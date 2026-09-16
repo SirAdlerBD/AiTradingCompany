@@ -106,12 +106,17 @@ class McpClient:
         if not tool:
             raise McpToolError(f"[{self.name}] tool name not configured")
         res = await self._client.call_tool(tool, args or {})
-        text = "\n".join(c.text for c in res.content if getattr(c, "type", "") == "text")
+        texts = [c.text for c in res.content if getattr(c, "type", "") == "text"]
+        text = "\n".join(texts)
         if res.is_error:
             raise McpToolError(f"[{self.name}] {tool} failed: {text[:800]}")
         if res.structured_content:
             return res.structured_content
+        # One block holding a JSON document (saxo-mcp, FMP), or one block per list
+        # item (the Python SDK serialises a list return that way). Both become JSON.
         try:
-            return json.loads(text)
+            if len(texts) == 1:
+                return json.loads(texts[0])
+            return [json.loads(t) for t in texts]
         except json.JSONDecodeError:
             return text

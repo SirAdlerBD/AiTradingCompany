@@ -17,14 +17,7 @@ from .db import j, now
 from .llm import LlmClient, LlmError, parse_json_object, prompt_hash
 from .schemas import AnalystView, check_evidence, flatten
 
-TECHNICAL_SYSTEM = """You are the technical analyst on a small research desk. The desk decides weekly and holds for weeks to months (long only, no shorts). Your single question: is the current ENTRY TIMING for this instrument acceptable this week, and what would make that view wrong?
-
-Rules, all strict:
-1. Use only the FIELDS block. It is the complete set of facts you have. Do not use outside knowledge of the company, news, or the macro picture; that is another analyst's job.
-2. Every item in "evidence" must copy a key from FIELDS into "field" and copy its value EXACTLY into "value". Do not compute, round or invent numbers. If you want to argue from a comparison, cite both fields as separate evidence items and make the comparison in "why".
-3. "would_be_wrong_if" must be a falsifiable condition stated in terms of one or more FIELDS keys (for example "indicators.last_close falls below indicators.sma_200").
-4. Be specific and short. No hedging language, no disclaimers.
-5. Output a single JSON object and nothing else, with exactly these keys:
+OUTPUT_CONTRACT = """Output a single JSON object and nothing else, with exactly these keys:
 {
   "stance": "favourable" | "unfavourable" | "neutral",
   "thesis": string (20-900 chars),
@@ -34,24 +27,85 @@ Rules, all strict:
   "horizon_days": integer between 5 and 365
 }"""
 
+EVIDENCE_RULES = """Rules, all strict:
+1. Use only the FIELDS block. It is the complete set of facts you have. Do not use outside knowledge of the company, news, or the macro picture.
+2. Every item in "evidence" must copy a key from FIELDS into "field" and copy its value EXACTLY into "value". Do not compute, round or invent numbers. To argue from a comparison, cite both fields as separate evidence items and make the comparison in "why".
+3. "would_be_wrong_if" must be a falsifiable condition stated in terms of one or more FIELDS keys.
+4. Be specific and short. No hedging language, no disclaimers."""
 
-def technical_prompt(stable: dict[str, Any], as_of: str) -> tuple[str, str, dict[str, Any]]:
-    """Return (system, user, fields). `fields` is what evidence is checked against."""
-    view = {
+TECHNICAL_SYSTEM = f"""You are the technical analyst on a small research desk. The desk decides on a fixed cadence and holds for weeks to months (long only, no shorts). Your single question: is the current ENTRY TIMING for this instrument acceptable now, and what would make that view wrong?
+
+{EVIDENCE_RULES}
+5. {OUTPUT_CONTRACT}"""
+
+FUNDAMENTALS_SYSTEM = f"""You are the fundamentals analyst on a small research desk. The desk decides on a fixed cadence and holds for weeks to months (long only, no shorts). Your single question: over a 6-12 month horizon, is this business worth owning at today's valuation, judged against its own history and its peers, and what would make that view wrong? Entry timing is not your job; another analyst covers it.
+
+{EVIDENCE_RULES}
+5. {OUTPUT_CONTRACT}"""
+
+# prompt key -> (system prompt, default pack sections the role sees)
+PROMPTS: dict[str, tuple[str, list[str]]] = {
+    "technical": (TECHNICAL_SYSTEM, ["ticker", "instrument", "indicators", "bars_last_20"]),
+    "fundamentals": (FUNDAMENTALS_SYSTEM, ["ticker", "instrument", "fundamentals", "indicators_summary"]),
+}
+
+
+def pack_view(stable: dict[str, Any], sections: list[str]) -> dict[str, Any]:
+    """Select the parts of the stable pack a role may see."""
+    ind = stable.get("indicators", {})
+    available: dict[str, Any] = {
         "ticker": stable.get("ticker", {}),
         "instrument": {k: stable.get("instrument", {}).get(k) for k in ("description", "currency", "saxo_symbol")},
-        "indicators": stable.get("indicators", {}),
+        "indicators": ind,
+        "indicators_summary": {k: ind.get(k) for k in ("as_of", "last_close", "return_60d", "return_250d",
+                                                       "pct_from_high_252d", "realized_vol_20d")},
         "bars_last_20": stable.get("bars", [])[-20:],
+        "fundamentals": stable.get("fundamentals", {}),
     }
+    return {k: available[k] for k in sections if k in available}
+
+
+def role_prompt(cfg: Config, role_name: str) -> tuple[str, list[str]]:
+    role = cfg.roles[role_name]
+    key = role.prompt or "technical"
+    if key not in PROMPTS and not role.prompt_file:
+        raise ValueError(f"role {role_name!r}: unknown prompt {key!r}; known {sorted(PROMPTS)} or set prompt_file")
+    system, sections = PROMPTS.get(key, ("", []))
+    if role.prompt_file:
+        system = cfg.path(role.prompt_file).read_text()
+    if role.sections:
+        sections = role.sections
+    return system, sections
+
+
+def build_prompt(cfg: Config, role_name: str, stable: dict[str, Any], as_of: str) -> tuple[str, str, dict[str, Any]]:
+    """Return (system, user, fields). `fields` is what evidence is checked against."""
+    system, sections = role_prompt(cfg, role_name)
+    view = pack_view(stable, sections)
     fields = flatten(view)
     user = (
         f"DATE: {as_of}\n"
-        f"INSTRUMENT: {view['ticker'].get('symbol')} ({view['instrument'].get('description')})\n\n"
+        f"INSTRUMENT: {stable.get('ticker', {}).get('symbol')} ({stable.get('instrument', {}).get('description')})\n\n"
         "FIELDS (key: value). Cite keys verbatim.\n"
         + "\n".join(f"{k}: {json.dumps(v)}" for k, v in fields.items())
         + "\n\nAnswer with the JSON object only."
     )
-    return TECHNICAL_SYSTEM, user, fields
+    return system, user, fields
+
+
+def technical_prompt(stable: dict[str, Any], as_of: str) -> tuple[str, str, dict[str, Any]]:
+    """Kept for `desk prompt` and tests: the technical prompt with default sections."""
+    system, sections = PROMPTS["technical"]
+    view = pack_view(stable, sections)
+    fields = flatten(view)
+    user = (
+        f"DATE: {as_of}\n"
+        f"INSTRUMENT: {stable.get('ticker', {}).get('symbol')} ({stable.get('instrument', {}).get('description')})\n\n"
+        "FIELDS (key: value). Cite keys verbatim.\n"
+        + "\n".join(f"{k}: {json.dumps(v)}" for k, v in fields.items())
+        + "\n\nAnswer with the JSON object only."
+    )
+    return system, user, fields
 
 
 def run_view(cfg: Config, llm: LlmClient, con: sqlite3.Connection, run_id: str, ticker: str,
@@ -60,14 +114,14 @@ def run_view(cfg: Config, llm: LlmClient, con: sqlite3.Connection, run_id: str, 
     """Produce and store one analyst view. Returns the analyst_views id, or None if no
     valid view could be obtained within cfg.pipeline.max_attempts."""
     role = cfg.roles[role_name]
-    system, user, fields = technical_prompt(stable, as_of)
+    system, user, fields = build_prompt(cfg, role_name, stable, as_of)
     feedback = ""
     for attempt in range(1, cfg.pipeline.max_attempts + 1):
         user_msg = user if not feedback else user + "\n\nYOUR PREVIOUS ANSWER WAS REJECTED:\n" + feedback + "\nFix every problem and answer again with the JSON object only."
         error: str | None = None
         resp = None
         try:
-            resp = llm.complete(role, system, user_msg)
+            resp = llm.complete(role, system, user_msg, AnalystView)
         except LlmError as e:
             error = f"llm: {e}"
         view: AnalystView | None = None

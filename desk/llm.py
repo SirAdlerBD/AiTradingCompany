@@ -31,7 +31,7 @@ class LlmResponse:
 
 
 class LlmClient(Protocol):
-    def complete(self, role: Role, system: str, user: str) -> LlmResponse: ...
+    def complete(self, role: Role, system: str, user: str, schema: type | None = None) -> LlmResponse: ...
 
 
 class LlmError(RuntimeError):
@@ -46,16 +46,18 @@ class OpenAICompatClient:
     """Chat completions over HTTP. `transport` is injectable for tests."""
 
     def __init__(self, providers: dict[str, Provider], transport: Callable[..., httpx.Response] | None = None,
-                 retries: int = 2, backoff_s: float = 5.0):
+                 retries: int | None = None, backoff_s: float | None = None):
         self.providers = providers
         self.transport = transport
-        self.retries = retries
-        self.backoff_s = backoff_s
+        self._retries = retries        # None = per-provider config
+        self._backoff = backoff_s
 
-    def complete(self, role: Role, system: str, user: str) -> LlmResponse:
+    def complete(self, role: Role, system: str, user: str, schema: type | None = None) -> LlmResponse:
         prov = self.providers.get(role.provider)
         if prov is None:
             raise LlmError(f"role {role.model!r} names unknown provider {role.provider!r}")
+        retries = prov.retries if self._retries is None else self._retries
+        backoff = prov.backoff_s if self._backoff is None else self._backoff
         key = os.environ.get(prov.api_key_env)
         if not key:
             raise LlmError(f"{prov.api_key_env} is not set")
@@ -71,7 +73,9 @@ class OpenAICompatClient:
         headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
 
         last: Exception | None = None
-        for attempt in range(self.retries + 1):
+        tries = 0
+        for attempt in range(retries + 1):
+            tries += 1
             t0 = time.monotonic()
             try:
                 if self.transport is not None:
@@ -95,10 +99,86 @@ class OpenAICompatClient:
                 last = e
                 retryable = isinstance(e, httpx.HTTPError) or (isinstance(e, LlmError) and " HTTP " in str(e)
                                                                 and any(f" HTTP {c}" in str(e) for c in (429, 500, 502, 503, 504)))
-                if not retryable or attempt == self.retries:
+                if not retryable or attempt == retries:
                     break
-                time.sleep(self.backoff_s * (attempt + 1))
-        raise LlmError(f"{prov.name} call failed: {last}")
+                time.sleep(backoff * (2 ** attempt))
+        raise LlmError(f"{prov.name} call failed after {tries} attempt(s): {last}")
+
+
+class AnthropicClient:
+    """Trader-grade calls through the official Anthropic SDK with structured output.
+
+    `client_factory` is injectable for tests. Sampling parameters are never sent
+    (current Claude models reject them); depth is controlled by `effort`.
+    """
+
+    def __init__(self, providers: dict[str, Provider], client_factory: Callable[[Provider], Any] | None = None):
+        self.providers = providers
+        self.client_factory = client_factory
+        self._clients: dict[str, Any] = {}
+
+    def _client(self, prov: Provider):
+        if prov.name not in self._clients:
+            if self.client_factory is not None:
+                self._clients[prov.name] = self.client_factory(prov)
+            else:
+                import anthropic
+                key = os.environ.get(prov.api_key_env)
+                if not key:
+                    raise LlmError(f"{prov.api_key_env} is not set")
+                self._clients[prov.name] = anthropic.Anthropic(api_key=key, max_retries=prov.retries)
+        return self._clients[prov.name]
+
+    def complete(self, role: Role, system: str, user: str, schema: type | None = None) -> LlmResponse:
+        prov = self.providers.get(role.provider)
+        if prov is None:
+            raise LlmError(f"role {role.model!r} names unknown provider {role.provider!r}")
+        client = self._client(prov)
+        kwargs: dict[str, Any] = {
+            "model": role.model, "max_tokens": role.max_tokens, "system": system,
+            "messages": [{"role": "user", "content": user}],
+        }
+        if role.effort:
+            kwargs["output_config"] = {"effort": role.effort}
+        t0 = time.monotonic()
+        try:
+            if schema is not None:
+                resp = client.messages.parse(output_format=schema, **kwargs)
+            else:
+                resp = client.messages.create(**kwargs)
+        except Exception as e:  # noqa: BLE001 - SDK errors become one LlmError with the class name
+            raise LlmError(f"{prov.name} {type(e).__name__}: {str(e)[:300]}") from None
+        if getattr(resp, "stop_reason", None) == "refusal":
+            raise LlmError(f"{prov.name} refused the request ({getattr(resp, 'stop_details', None)})")
+        text = "".join(getattr(b, "text", "") for b in resp.content if getattr(b, "type", "") == "text")
+        if getattr(resp, "stop_reason", None) == "max_tokens":
+            raise LlmError(f"{prov.name} hit max_tokens={role.max_tokens} before finishing")
+        usage = getattr(resp, "usage", None)
+        tin = getattr(usage, "input_tokens", None)
+        tout = getattr(usage, "output_tokens", None)
+        cost = None if tin is None or tout is None else (tin * role.price_in_per_m + tout * role.price_out_per_m) / 1e6
+        return LlmResponse(text=text, model=getattr(resp, "model", role.model), tokens_in=tin, tokens_out=tout,
+                           latency_ms=int((time.monotonic() - t0) * 1000), cost_usd=cost, raw=resp)
+
+
+class Router:
+    """Dispatches each role to its provider's client. Build one per run."""
+
+    def __init__(self, providers: dict[str, Provider], clients: dict[str, LlmClient] | None = None):
+        self.providers = providers
+        self.clients: dict[str, LlmClient] = clients or {}
+
+    def _for(self, role: Role) -> LlmClient:
+        prov = self.providers.get(role.provider)
+        if prov is None:
+            raise LlmError(f"unknown provider {role.provider!r}")
+        if prov.kind not in self.clients:
+            self.clients[prov.kind] = (AnthropicClient(self.providers) if prov.kind == "anthropic"
+                                       else OpenAICompatClient(self.providers))
+        return self.clients[prov.kind]
+
+    def complete(self, role: Role, system: str, user: str, schema: type | None = None) -> LlmResponse:
+        return self._for(role).complete(role, system, user, schema)
 
 
 def list_models(prov: Provider, get: Callable[..., httpx.Response] | None = None) -> list[str]:
