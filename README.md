@@ -43,6 +43,12 @@ saxo-mcp's HTTP server must already be running under pm2 on
    `fmp_mcp.tools` and set `fmp_mcp.enabled: true`. Until then the pack carries
    `fundamentals: {}`.
 
+**After every `git pull`, rerun `sudo ./deploy/install.sh`.** The service runs
+the copy in `/opt/desk`, not your clone; the script rsyncs it and records the
+deployed commit in `/opt/desk/COMMIT`. Every `desk` command prints the version,
+commit and config path it is using on its first line, so a stale copy is
+visible at a glance.
+
 Running by hand as the service user:
 
 ```
