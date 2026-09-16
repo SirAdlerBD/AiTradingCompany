@@ -10,7 +10,7 @@ database, not from feelings. Status is kept current in this file.
 | 0 | Skeleton: guard, hashed data pack, benchmark, SQLite, systemd timer | Two same-day runs hash identically | Done |
 | 1 | One technical analyst; output validated against the pack | Five consecutive daily runs with a valid view per ticker | Running since 2026-09-16 |
 | 2 | The loop: trader, risk rules in code, gate, shadow ledger, stops, time stop | Any decision reconstructible from the DB (`desk decisions`); shadow book marked daily against the benchmark for two weeks (`desk performance`) | Built, observing |
-| 3 | Breadth and debate: fundamentals analyst on FMP, 3 to 5 tickers, one moderator pass | Four weeks with debate on, and DB evidence of decisions the debate changed | Fundamentals analyst built; FMP wiring and moderator pending |
+| 3 | Breadth and debate: fundamentals analyst on FMP, 3 to 5 tickers, one moderator pass | Four weeks with debate on, and DB evidence of decisions the debate changed | Fundamentals analyst and FMP REST client built, `fmp-check` to confirm on the VPS; moderator pending |
 | 4 | Live in SIM, untouched, 8 to 12 weeks | Monthly review of discipline KPIs: veto rate, turnover, holding period, drawdown vs benchmark | |
 | 5 | SIM execution through the Saxo MCP, behind its own unlock ritual | Shadow and SIM ledgers reconciled side by side | |
 
@@ -20,7 +20,7 @@ already redundant (see the "trader sided with" rate in `desk report`).
 ## How a run works (phase 2)
 
 ```
-guard -> data packs (Saxo bars + quote, FMP fundamentals) -> analyst views
+guard -> data packs (Saxo bars + quote, FMP fundamentals over REST) -> analyst views
       -> fill pending decisions at today's mark (shadow ledger)
       -> monitor open positions: stop, time stop -> exit decisions via the gate
       -> on a decision day: per ticker, trader -> risk (code) -> gate -> pending decision

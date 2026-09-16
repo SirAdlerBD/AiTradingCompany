@@ -10,7 +10,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from . import __version__, analysts, benchmark, config as cfgmod, datapack, guard, ledger, performance, risk, trader
+from . import __version__, analysts, benchmark, config as cfgmod, datapack, fmp as fmpmod, guard, ledger, performance, risk, trader
 from .llm import LlmClient, LlmError, Router, list_models
 from .schemas import Stop, flatten
 from datetime import date as _date
@@ -42,9 +42,8 @@ def banner(config_path: str) -> str:
 
 
 async def cmd_discover(cfg: Config, which: str, url: str | None = None, auth: str | None = None) -> None:
-    """List a server's tools. --url/--auth try a candidate endpoint without editing config,
-    which is how the FMP MCP URL and auth style get confirmed on the VPS."""
-    server = (cfg.saxo_mcp if which == "saxo" else cfg.fmp_mcp).model_copy()
+    """List a server's tools. --url/--auth try a candidate endpoint without editing config."""
+    server = cfg.saxo_mcp.model_copy()
     if url:
         server.url = url
     if auth:
@@ -55,7 +54,29 @@ async def cmd_discover(cfg: Config, which: str, url: str | None = None, auth: st
     for t in tools:
         print(f"{t['name']:32s} args={','.join(t['args'])}")
         print(f"{'':32s} {t['description'][:110]}")
-    print(f"\n{len(tools)} tools. Put url and auth_style in config/desk.yaml under {which}_mcp and set enabled: true.")
+    print(f"\n{len(tools)} tools.")
+
+
+def cmd_fmp_check(cfg: Config, symbol: str, client: Any | None = None) -> int:
+    """Call every configured FMP fetch for one symbol and show what came back. Exit 1 on any problem."""
+    try:
+        client = client or fmpmod.FmpClient(cfg.fmp_rest)
+    except fmpmod.FmpFailure as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
+    bad = 0
+    for r in client.check(symbol):
+        if r.get("ok"):
+            miss = f"  MISSING keep fields: {r['missing']}" if r["missing"] else ""
+            bad += bool(r["missing"])
+            print(f"OK   {r['name']:14s} {r['path']:28s} rows={r['rows']}{miss}")
+            print(f"     keys: {', '.join(r['keys'][:40])}{' ...' if len(r['keys']) > 40 else ''}")
+        else:
+            bad += 1
+            print(f"FAIL {r['name']:14s} {r['path']:28s} {r.get('error')}")
+    print("\nall fetches ok; set fmp_rest.enabled: true and add fundamentals_analyst to pipeline.analysts"
+          if not bad else f"\n{bad} problem(s): fix path/keep names in config/desk.yaml under fmp_rest.fetch")
+    return 1 if bad else 0
 
 
 def cmd_discover_models(cfg: Config, provider: str) -> None:
@@ -161,7 +182,7 @@ def _sector(stable: dict | None) -> str | None:
     return prof.get("sector") if isinstance(prof, dict) else None
 
 
-async def run_once(cfg: Config, con, *, saxo_inproc: Any | None = None, fmp_inproc: Any | None = None,
+async def run_once(cfg: Config, con, *, saxo_inproc: Any | None = None, fmp_client: Any | None = None,
                    llm: LlmClient | None = None, today=None, decide: bool | None = None, log=print) -> str:
     """One full run, in stages:
       1. guard            4. fill pending decisions at today's mark (shadow ledger)
@@ -188,27 +209,23 @@ async def run_once(cfg: Config, con, *, saxo_inproc: Any | None = None, fmp_inpr
             llm = llm or Router(cfg.providers)
         con.execute("UPDATE runs SET views_expected=?, decided=? WHERE run_id=?",
                     (len(cfg.universe.tickers) * len(cfg.pipeline.analysts) if run_analysts else 0, int(deciding), run_id))
-        fmp_on = cfg.fmp_mcp.enabled and bool(cfg.fmp_mcp.fetch)
+        fmp_on = cfg.fmp_rest.enabled and bool(cfg.fmp_rest.fetch)
         packs: dict[str, dict] = {}
         async with McpClient(cfg.saxo_mcp, "saxo", inproc=saxo_inproc) as saxo:
             key = await guard.check_account(cfg, saxo)
             con.execute("UPDATE runs SET account_key=? WHERE run_id=?", (key, run_id))
             con.commit()
-            fmp_cm = McpClient(cfg.fmp_mcp, "fmp", inproc=fmp_inproc) if fmp_on else None
             fmp = None
-            if fmp_cm:
+            if fmp_on:
                 try:
-                    fmp = await fmp_cm.__aenter__()
-                except (McpConnectError, Exception) as e:  # noqa: BLE001 - FMP is optional data, never fatal
-                    fmp_cm = None
-                    warn(con, run_id, f"fmp unreachable, fundamentals empty this run: {str(e)[:200]}", log)
+                    fmp = fmp_client or fmpmod.FmpClient(cfg.fmp_rest)
+                except fmpmod.FmpFailure as e:  # FMP is optional data, never fatal
+                    warn(con, run_id, f"fmp disabled this run: {e}", log)
             try:
                 for t in cfg.universe.tickers:
                     try:
                         pack = await datapack.build(cfg, saxo, fmp, con, t, today=today)
-                    except Exception as e:  # noqa: BLE001
-                        if fmp is None or not datapack.is_fmp_failure(e):
-                            raise
+                    except fmpmod.FmpFailure as e:
                         warn(con, run_id, f"{t.symbol}: fmp fetch failed, fundamentals empty: {str(e)[:200]}", log)
                         pack = await datapack.build(cfg, saxo, None, con, t, today=today)
                     con.execute(
@@ -229,8 +246,7 @@ async def run_once(cfg: Config, con, *, saxo_inproc: Any | None = None, fmp_inpr
                         for role_name in cfg.pipeline.analysts:
                             analysts.run_view(cfg, llm, con, run_id, t.symbol, pack["stable"], as_of, role_name, log=log)
             finally:
-                if fmp_cm:
-                    await fmp_cm.__aexit__(None, None, None)
+                pass
             b = await benchmark.snapshot(cfg, saxo, con, run_id, today=today)
             log(f"benchmark {b['symbol']}: {b['price']:.2f} {b['currency']}, value {b['value']:.2f}")
 
@@ -476,7 +492,9 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--config", default="config/desk.yaml")
     sub = p.add_subparsers(dest="cmd", required=True)
     d = sub.add_parser("discover-tools", help="list the tools an MCP server exposes")
-    d.add_argument("server", choices=["saxo", "fmp"])
+    d.add_argument("server", choices=["saxo"])
+    fc = sub.add_parser("fmp-check", help="call every configured FMP fetch for a symbol and show what comes back")
+    fc.add_argument("symbol")
     d.add_argument("--url", help="try this endpoint instead of the configured one")
     d.add_argument("--auth", choices=["bearer", "query", "header"], help="try this auth style instead of the configured one")
     dm = sub.add_parser("discover-models", help="list the models a provider serves; exit 1 if a pinned model is missing")
@@ -514,6 +532,8 @@ def main(argv: list[str] | None = None) -> None:
             asyncio.run(cmd_discover(cfg, a.server, a.url, a.auth))
         elif a.cmd == "discover-models":
             cmd_discover_models(cfg, a.provider)
+        elif a.cmd == "fmp-check":
+            sys.exit(cmd_fmp_check(cfg, a.symbol))
         elif a.cmd == "guard":
             asyncio.run(cmd_guard(cfg))
         elif a.cmd == "run":

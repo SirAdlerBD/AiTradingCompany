@@ -15,12 +15,24 @@ class Environment(str, Enum):
     SIM = "SIM"  # LIVE is not a member. Adding it is a separate project.
 
 
-class FetchSpec(BaseModel):
-    """One MCP call whose result becomes a section of the data pack."""
-    tool: str
-    args: dict[str, Any] = Field(default_factory=dict)
+class RestFetch(BaseModel):
+    """One REST GET whose result becomes a section of the data pack (fundamentals.<name>)."""
+    path: str                                       # relative to fmp_rest.base_url
+    params: dict[str, Any] = Field(default_factory=dict)
     keep: list[str] = Field(default_factory=list)   # field allowlist; [] keeps everything
     limit: int | None = None                        # keep at most N rows when the result is a list
+
+
+class FmpRest(BaseModel):
+    enabled: bool = False
+    base_url: str = "https://financialmodelingprep.com/stable"
+    api_key_env: str = "FMP_API_KEY"
+    api_key_param: str = "apikey"
+    symbol_param: str = "symbol"
+    timeout_s: float = 30.0
+    retries: int = Field(default=2, ge=0, le=10)
+    backoff_s: float = Field(default=5.0, ge=0)
+    fetch: dict[str, RestFetch] = Field(default_factory=dict)
 
 
 class McpServer(BaseModel):
@@ -31,7 +43,6 @@ class McpServer(BaseModel):
     auth_param: str = "apikey"          # query parameter / header name for query|header styles
     symbol_arg: str = "symbol"          # argument name the server's per-ticker tools take
     tools: dict[str, str] = Field(default_factory=dict)          # named tools (saxo)
-    fetch: dict[str, FetchSpec] = Field(default_factory=dict)    # named fetches (fmp) -> pack sections
     sim_account_keys_env: str | None = None
     require_trading_disabled: bool = True
 
@@ -123,7 +134,7 @@ class LedgerConfig(BaseModel):
 class Config(BaseModel):
     environment: Environment
     saxo_mcp: McpServer
-    fmp_mcp: McpServer
+    fmp_rest: FmpRest = Field(default_factory=FmpRest)
     universe: Universe
     benchmark: Benchmark
     storage: Storage
