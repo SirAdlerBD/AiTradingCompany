@@ -92,8 +92,14 @@ def make_saxo(*, trading="DISABLED (hard block): this server cannot place, modif
 def cfg(tmp_path: Path, monkeypatch) -> cfgmod.Config:
     monkeypatch.setenv("SAXO_SIM_ACCOUNT_KEYS", SIM_KEY)
     monkeypatch.setenv("SAXO_SIM_MCP_TOKEN", "t")
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
     monkeypatch.delenv("SAXO_ALLOW_LIVE", raising=False)
     c = cfgmod.load(Path(__file__).parent.parent / "config" / "desk.yaml")
     c.storage.db_path = tmp_path / "desk.sqlite"
     c.universe.history_days = 30
+    # Test baseline, whatever the shipped pipeline says: one analyst, no FMP.
+    # Tests that want more opt in explicitly.
+    c.pipeline.analysts = ["technical_analyst"]
+    c.fmp_rest.enabled = False
     return c

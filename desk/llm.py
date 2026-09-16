@@ -64,9 +64,10 @@ class OpenAICompatClient:
         body: dict[str, Any] = {
             "model": role.model,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            "temperature": role.temperature,
-            "max_tokens": role.max_tokens,
+            prov.max_tokens_param: role.max_tokens,
         }
+        if prov.send_temperature:
+            body["temperature"] = role.temperature
         if role.json_mode:
             body["response_format"] = {"type": "json_object"}
         url = prov.base_url.rstrip("/") + "/chat/completions"

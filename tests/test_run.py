@@ -11,6 +11,7 @@ TODAY = date(2026, 9, 16)
 
 
 async def test_two_same_day_runs_hash_identically(cfg):
+    cfg.pipeline.analysts, cfg.pipeline.trader = [], None      # phase 0: no model calls at all
     con = connect(cfg.storage.db_path)
     calls: list = []
     saxo = make_saxo(today=TODAY, calls=calls)
@@ -51,6 +52,7 @@ async def test_two_same_day_runs_hash_identically(cfg):
 
 
 async def test_report_flags_nothing_after_clean_runs(cfg, capsys):
+    cfg.pipeline.analysts, cfg.pipeline.trader = [], None
     con = connect(cfg.storage.db_path)
     saxo = make_saxo(today=TODAY)
     await cli.run_once(cfg, con, saxo_inproc=saxo, today=TODAY, log=lambda *_: None)

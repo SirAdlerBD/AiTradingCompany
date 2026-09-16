@@ -14,6 +14,7 @@ from pydantic import ValidationError
 
 from .config import Config
 from .db import j, now
+from .log import as_log
 from .llm import LlmClient, LlmError, parse_json_object, prompt_hash
 from .schemas import AnalystView, check_evidence, flatten
 
@@ -113,6 +114,7 @@ def run_view(cfg: Config, llm: LlmClient, con: sqlite3.Connection, run_id: str, 
              log=print) -> int | None:
     """Produce and store one analyst view. Returns the analyst_views id, or None if no
     valid view could be obtained within cfg.pipeline.max_attempts."""
+    log = as_log(log)
     role = cfg.roles[role_name]
     system, user, fields = build_prompt(cfg, role_name, stable, as_of)
     feedback = ""
@@ -144,6 +146,8 @@ def run_view(cfg: Config, llm: LlmClient, con: sqlite3.Connection, run_id: str, 
              now(), attempt, error),
         ).lastrowid
         con.commit()
+        if resp is not None:
+            log.cost(role_name, resp.model, resp.tokens_in, resp.tokens_out, resp.cost_usd, resp.latency_ms, attempt, view is not None)
         if view is not None:
             vid = con.execute(
                 "INSERT INTO analyst_views(run_id, ticker, role, thesis, evidence_json, confidence, would_be_wrong_if, "
@@ -153,8 +157,13 @@ def run_view(cfg: Config, llm: LlmClient, con: sqlite3.Connection, run_id: str, 
             ).lastrowid
             con.commit()
             log(f"{ticker}: {role_name} {view.stance} (conf {view.confidence:.2f}, {len(view.evidence)} evidence, attempt {attempt})")
+            log.block(f"{role_name} on {ticker}: {view.stance}, confidence {view.confidence:.2f}, horizon {view.horizon_days}d",
+                      [f"thesis: {view.thesis}", "evidence:"]
+                      + [f"  - {e.field} = {e.value}: {e.why}" for e in view.evidence]
+                      + [f"wrong if: {view.would_be_wrong_if}"])
             return vid
         log(f"{ticker}: {role_name} attempt {attempt} rejected: {error[:160] if error else '?'}")
+        log.detail(f"  rejected answer ({role_name}, attempt {attempt}): {(resp.text if resp else '')[:600]}")
         feedback = error or ""
         if error and error.startswith("llm:"):
             break  # provider failure: retries already happened inside the client

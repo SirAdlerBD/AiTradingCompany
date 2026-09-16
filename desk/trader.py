@@ -14,6 +14,7 @@ from pydantic import ValidationError
 
 from .config import Config
 from .db import j, now
+from .log import as_log
 from .llm import LlmClient, LlmError, parse_json_object, prompt_hash
 from .risk import RuleSet
 from .schemas import TraderProposal, check_proposal, flatten
@@ -80,6 +81,7 @@ def build_prompt(cfg: Config, stable: dict[str, Any], as_of: str, views: list[di
 def propose(cfg: Config, llm: LlmClient, con: sqlite3.Connection, run_id: str, ticker: str,
             stable: dict[str, Any], as_of: str, book: dict[str, Any], rules: RuleSet, log=print) -> int | None:
     """Ask the trader, validate, store. Returns trader_proposals.id or None."""
+    log = as_log(log)
     role_name = cfg.pipeline.trader
     role = cfg.roles[role_name]
     views = con.execute(
@@ -122,6 +124,8 @@ def propose(cfg: Config, llm: LlmClient, con: sqlite3.Connection, run_id: str, t
              now(), attempt, error),
         ).lastrowid
         con.commit()
+        if resp is not None:
+            log.cost(role_name, resp.model, resp.tokens_in, resp.tokens_out, resp.cost_usd, resp.latency_ms, attempt, proposal is not None)
         if proposal is not None:
             pid = con.execute(
                 "INSERT INTO trader_proposals(run_id, ticker, action, target_weight, winning_argument, rejected_json, "
@@ -136,8 +140,17 @@ def propose(cfg: Config, llm: LlmClient, con: sqlite3.Connection, run_id: str, t
             con.commit()
             log(f"{ticker}: trader {proposal.action} w={proposal.target_weight:.3f} sided_with={proposal.sided_with} "
                 f"stop={proposal.stop.field + proposal.stop.op + str(proposal.stop.value) if proposal.stop else '-'} (attempt {attempt})")
+            log.block(f"trader on {ticker}: {proposal.action} target weight {proposal.target_weight:.3f}, "
+                      f"confidence {proposal.confidence:.2f}, horizon {proposal.horizon_days}d",
+                      [f"views weighed: {', '.join(v['role'] + '=' + v['stance'] for v in views) or 'none'}",
+                       f"sided with: {', '.join(proposal.sided_with) or 'nobody'}",
+                       f"winning argument: {proposal.winning_argument}"]
+                      + ([f"rejected [{r.role}]: {r.argument} -> {r.why_rejected}" for r in proposal.rejected_arguments]
+                         or ["rejected: none"])
+                      + [f"stop: {proposal.stop.field} {proposal.stop.op} {proposal.stop.value}" if proposal.stop else "stop: none"])
             return pid
         log(f"{ticker}: trader attempt {attempt} rejected: {error[:160] if error else '?'}")
+        log.detail(f"  rejected answer (trader, attempt {attempt}): {(resp.text if resp else '')[:600]}")
         feedback = error or ""
         if error and error.startswith("llm:"):
             break
