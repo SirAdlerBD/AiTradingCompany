@@ -42,19 +42,22 @@ fmp_mcp:
     peers: ""
 
 universe:
-  # Long-only US/EU large caps. Saxo UIC + AssetType resolved once, cached in
-  # the `instruments` table, and matched on symbol + exchange + currency.
+  # Long-only US/EU large caps. A listing is identified by symbol + mic, the
+  # two halves of Saxo's Symbol field (MSFT:xnas, SAPG:xetr, ASML:xams).
+  # Do not use Saxo's ExchangeId here: it is an internal code that differs by
+  # asset type on the same venue (Xetra stocks FSE, Xetra ETFs XETR_ETF).
+  # Resolved once via search_instruments and cached in the `instruments` table.
   tickers:
-    - {symbol: MSFT, exchange: NASDAQ, currency: USD}
+    - {symbol: MSFT, mic: xnas, currency: USD}
   history_days: 250        # daily bars in the data pack (Saxo max 1200 per call)
 
 benchmark:
   # Same start capital bought into the index ETF on the first run date.
   # SXR8 = iShares Core S&P 500 UCITS (acc), EUR on Xetra: honest for a EUR
-  # account without FX noise. Use {symbol: SPY, exchange: NYSE_ARCA, currency: USD}
-  # for a USD account.
+  # account without FX noise. Use {symbol: SPY, mic: arcx, currency: USD}
+  # for a USD account. Verified on SIM: SXR8:xetr is UIC 1095726, EUR.
   symbol: SXR8
-  exchange: XETR
+  mic: xetr
   currency: EUR
   start_capital: 100000    # shadow-ledger starting capital, in account currency
 

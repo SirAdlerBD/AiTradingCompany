@@ -14,7 +14,7 @@ async def snapshot(cfg: Config, saxo: McpClient, con: sqlite3.Connection, run_id
     b = cfg.benchmark
     # includeNonTradable: an EU retail SIM account may not be allowed to trade the
     # ETF, but we only need its price.
-    inst = await resolve_instrument(cfg, saxo, con, b.symbol, b.exchange, b.currency,
+    inst = await resolve_instrument(cfg, saxo, con, b.symbol, b.mic, b.currency,
                                     asset_types="Etf", include_non_tradable=True)
     quote = await fetch_quote(cfg, saxo, inst)
     price = mark_price(quote)

@@ -5,16 +5,21 @@ import pytest
 from desk import datapack
 
 
-def test_match_prefers_exchange_then_currency():
+def test_match_uses_symbol_and_mic_not_exchange_id():
     hits = [
-        {"Identifier": 1, "Symbol": "MSFT:xmil", "ExchangeId": "MIL", "CurrencyCode": "EUR"},
-        {"Identifier": 2, "Symbol": "MSFT:xnas", "ExchangeId": "NASDAQ", "CurrencyCode": "USD"},
-        {"Identifier": 3, "Symbol": "MSFTX:xnas", "ExchangeId": "NASDAQ", "CurrencyCode": "USD"},
+        {"Identifier": 1, "Symbol": "SAPG:xetr", "ExchangeId": "FSE", "CurrencyCode": "EUR"},
+        {"Identifier": 2, "Symbol": "SXR8:xetr", "ExchangeId": "XETR_ETF", "CurrencyCode": "EUR"},
+        {"Identifier": 3, "Symbol": "MSFT:xnas", "ExchangeId": "NASDAQ", "CurrencyCode": "USD"},
+        {"Identifier": 4, "Symbol": "1MSFT:xnas", "ExchangeId": "NASDAQ", "CurrencyCode": "USD"},
+        {"Identifier": 5, "Symbol": "MSFT:xmil", "ExchangeId": "MIL", "CurrencyCode": "EUR"},
     ]
-    assert datapack.match_instrument(hits, "msft", "NASDAQ", "USD")["Identifier"] == 2
-    assert datapack.match_instrument(hits, "MSFT", "MIL", None)["Identifier"] == 1
+    assert datapack.match_instrument(hits, "sxr8", "XETR", "EUR")["Identifier"] == 2
+    assert datapack.match_instrument(hits, "SAPG", "xetr", None)["Identifier"] == 1
+    assert datapack.match_instrument(hits, "MSFT", "xnas", "USD")["Identifier"] == 3
     with pytest.raises(datapack.InstrumentNotFound):
-        datapack.match_instrument(hits, "AAPL", "NASDAQ", "USD")
+        datapack.match_instrument(hits, "MSFT", "xetr", "EUR")      # not listed there
+    with pytest.raises(datapack.InstrumentNotFound, match="not in USD"):
+        datapack.match_instrument(hits, "MSFT", "xmil", "USD")      # wrong currency is fatal
 
 
 def test_normalise_bars_reads_saxo_mcp_shape_and_sorts():
