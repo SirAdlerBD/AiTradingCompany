@@ -2,7 +2,7 @@
 # One-time setup on the VPS. Run as root from the repo root.
 set -euo pipefail
 id -u desk >/dev/null 2>&1 || useradd --system --home /opt/desk --shell /usr/sbin/nologin desk
-mkdir -p /opt/desk /var/lib/desk /etc/desk
+mkdir -p /opt/desk /var/lib/desk /var/lib/desk/reports /etc/desk
 rsync -a --delete --exclude .venv --exclude .git --exclude '*.sqlite*' ./ /opt/desk/
 # Record which commit is deployed; `desk` prints it and stores it on every run.
 git rev-parse --short HEAD > /opt/desk/COMMIT 2>/dev/null || echo unknown > /opt/desk/COMMIT
@@ -12,7 +12,7 @@ if [ ! -f /etc/desk/desk.env ]; then
   chown root:desk /etc/desk/desk.env; chmod 640 /etc/desk/desk.env
 fi
 [ -d /opt/desk/.venv ] || sudo -u desk python3 -m venv /opt/desk/.venv
-sudo -u desk /opt/desk/.venv/bin/pip install -q -e /opt/desk
+sudo -u desk /opt/desk/.venv/bin/pip install -q -e '/opt/desk[charts]'
 cp deploy/desk.service deploy/desk.timer /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now desk.timer

@@ -41,7 +41,8 @@ desk/risk.py            rule engine over config/risk_rules.yaml; drawdown hyster
 desk/ledger.py          shadow book from fills; pending decisions filled at the next mark; snapshots
 desk/benchmark.py       start capital bought into the index ETF on day 0, marked daily
 desk/db.py              SQLite schema plus column migrations; every table carries run_id
-desk/cli.py             desk run [--decide|--no-decide] | report | views | decisions | book | prompt | guard | discover-*
+desk/performance.py     shadow book vs benchmark from fills + frozen quotes; table and dated chart
+desk/cli.py             desk run [--decide|--no-decide] | performance | report | views | decisions | book | prompt | guard | discover-*
 PLAN.md                 phases, exit criteria, status
 deploy/                 systemd unit + timer, install script, env template
 tests/                  fake saxo-mcp in process, same tool names and payload shapes
@@ -121,6 +122,20 @@ decision: proposal, verdict with numbers, decision, fill.
 
 The trader runs on Claude through the Anthropic SDK with structured output.
 Effort and model are per role in config; no sampling parameters are sent.
+
+## Did it beat the index: `desk performance`
+
+The one number the project is judged on. Recomputed every time from `fills`
+and the quotes frozen in each day's data pack (no live call, reproducible),
+put next to `benchmark_snapshots` rebased to the same start, which is the day
+of the first decision by default (`--since` to change). Per day: shadow value,
+benchmark value, both cumulative returns, the DELTA in percentage points, and
+a running ahead/behind tally. Below `--min-days` (default 10 trading days) it
+says TOO EARLY and skips the chart; nothing is ever annualised. The chart is a
+dated PNG under `storage.reports_dir` when matplotlib is installed (`pip
+install -e '.[charts]'`, done by `deploy/install.sh`), else a dependency-free
+SVG. A mismatch between the recomputed value and the stored snapshot is
+printed as a warning.
 
 ## Phase 2 exit criteria
 

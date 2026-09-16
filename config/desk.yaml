@@ -88,6 +88,7 @@ benchmark:
 
 storage:
   db_path: /var/lib/desk/desk.sqlite
+  reports_dir: /var/lib/desk/reports     # `desk performance` charts, dated, never overwritten
 
 # Model providers. `openai_compat` providers speak the OpenAI chat-completions
 # format (Gemini exposes it; Groq and OpenAI do natively). `anthropic` uses the

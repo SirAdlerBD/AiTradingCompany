@@ -10,7 +10,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from . import __version__, analysts, benchmark, config as cfgmod, datapack, guard, ledger, risk, trader
+from . import __version__, analysts, benchmark, config as cfgmod, datapack, guard, ledger, performance, risk, trader
 from .llm import LlmClient, LlmError, Router, list_models
 from .schemas import Stop, flatten
 from datetime import date as _date
@@ -393,6 +393,23 @@ def cmd_decisions(cfg: Config, limit: int) -> None:
             print(f"   fill: qty {r['qty']:.4f} @ {r['px']:.2f}")
 
 
+def cmd_performance(cfg: Config, min_days: int, since: str | None, chart: str, force_chart: bool) -> int:
+    """Shadow book vs benchmark, recomputed from fills and frozen pack quotes. Exit 0 always; the
+    verdict line and the TOO EARLY banner carry the meaning."""
+    con = connect(cfg.storage.db_path)
+    s = performance.compute(cfg, con, since)
+    print(performance.render_table(s, min_days))
+    if not s.rows:
+        return 0
+    if s.trading_days < min_days and not force_chart:
+        print(f"chart skipped: fewer than {min_days} trading days (pass --chart-anyway to draw it regardless)")
+        return 0
+    if chart != "none":
+        p = performance.render_chart(cfg, s, backend=chart)
+        print(f"chart: {p}")
+    return 0
+
+
 def cmd_views(cfg: Config, limit: int) -> None:
     """Print the latest analyst views with their evidence, newest first."""
     con = connect(cfg.storage.db_path)
@@ -439,6 +456,12 @@ def main(argv: list[str] | None = None) -> None:
     g.add_argument("--decide", action="store_true", help="run the trader today regardless of the cadence")
     g.add_argument("--no-decide", action="store_true", help="skip the trader today regardless of the cadence")
     sub.add_parser("book", help="current shadow book and pending decisions")
+    pf = sub.add_parser("performance", help="shadow book vs benchmark, day by day, plus a dated chart")
+    pf.add_argument("--min-days", type=int, default=10, help="trading days needed before the verdict is shown as meaningful")
+    pf.add_argument("--since", help="comparison start date YYYY-MM-DD (default: the first decision)")
+    pf.add_argument("--chart", choices=["auto", "png", "svg", "none"], default="auto",
+                    help="png needs matplotlib (pip install -e '.[charts]'); svg needs nothing; auto prefers png")
+    pf.add_argument("--chart-anyway", action="store_true", help="draw the chart even below --min-days")
     dc = sub.add_parser("decisions", help="decision chains: proposal, verdict, decision, fill")
     dc.add_argument("--limit", type=int, default=10)
     sub.add_parser("report", help="recent runs, benchmark, same-day hash check, analyst views")
@@ -466,6 +489,8 @@ def main(argv: list[str] | None = None) -> None:
             asyncio.run(cmd_run(cfg, decide=True if a.decide else False if a.no_decide else None))
         elif a.cmd == "book":
             cmd_book(cfg)
+        elif a.cmd == "performance":
+            sys.exit(cmd_performance(cfg, a.min_days, a.since, a.chart, a.chart_anyway))
         elif a.cmd == "decisions":
             cmd_decisions(cfg, a.limit)
         elif a.cmd == "report":
