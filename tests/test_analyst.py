@@ -24,7 +24,7 @@ class FakeGemini:
         ans = self.answers.pop(0)
         if isinstance(ans, int):
             return httpx.Response(ans, text="upstream trouble", request=httpx.Request("POST", url))
-        payload = {"id": "x", "model": "gemini-2.5-flash", "choices": [{"message": {"role": "assistant", "content": ans}}],
+        payload = {"id": "x", "model": "gemini-3.7-flash", "choices": [{"message": {"role": "assistant", "content": ans}}],
                    "usage": {"prompt_tokens": 1200, "completion_tokens": 300}}
         return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
 
@@ -82,7 +82,7 @@ async def test_valid_view_is_stored_with_evidence(cfg, monkeypatch):
     req = fake.requests[0]
     assert req["url"].endswith("/v1beta/openai/chat/completions")
     assert req["headers"]["Authorization"] == "Bearer k"
-    assert req["body"]["response_format"] == {"type": "json_object"} and req["body"]["model"] == "gemini-2.5-flash"
+    assert req["body"]["response_format"] == {"type": "json_object"} and req["body"]["model"] == "gemini-3.7-flash"
     assert [m["role"] for m in req["body"]["messages"]] == ["system", "user"]
     assert cli.cmd_report(cfg) == 0
 
@@ -149,3 +149,31 @@ def test_migration_adds_columns_to_phase0_db(cfg):
     cols = {r[1] for r in con.execute("PRAGMA table_info(analyst_views)")}
     assert {"stance", "horizon_days"} <= cols
     connect(cfg.storage.db_path)   # idempotent
+
+
+async def test_retired_model_404_is_recorded_and_reported(cfg, monkeypatch, capsys):
+    con = connect(cfg.storage.db_path)
+    cfg.pipeline.analysts = ["technical_analyst"]
+    llm, fake = make_llm(cfg, monkeypatch, [404])
+    run_id = await cli.run_once(cfg, con, saxo_inproc=make_saxo(today=TODAY), llm=llm, today=TODAY, log=lambda *_: None)
+    assert len(fake.requests) == 1                       # 404 is not retried
+    err = con.execute("SELECT error FROM llm_calls WHERE run_id=?", (run_id,)).fetchone()["error"]
+    assert "404" in err
+    cli.cmd_report(cfg)
+    out = capsys.readouterr().out
+    assert "MISSING VIEW" in out and "last error (MSFT, technical_analyst): llm:" in out and "404" in out
+
+
+def test_discover_models_flags_missing_pin(cfg, monkeypatch, capsys):
+    from desk.llm import list_models
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    seen = {}
+
+    def fake_get(url, headers=None, timeout=None):
+        seen["url"], seen["auth"] = url, headers["Authorization"]
+        return httpx.Response(200, json={"data": [{"id": "models/gemini-3.7-flash"}, {"id": "models/gemini-3.7-pro"}]},
+                              request=httpx.Request("GET", url))
+
+    names = list_models(cfg.providers["gemini"], get=fake_get)
+    assert names == ["gemini-3.7-flash", "gemini-3.7-pro"]
+    assert seen["url"].endswith("/v1beta/openai/models") and seen["auth"] == "Bearer k"

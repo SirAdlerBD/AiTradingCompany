@@ -84,6 +84,11 @@ sudo systemctl start desk.service && journalctl -u desk -n 30
 calling a model, for prompt work. `desk views` prints recent views with their
 evidence.
 
+Models are pinned to explicit versions (see the comment in `config/desk.yaml`).
+When a provider retires one, the run keeps going, `llm_calls.error` holds the
+404, and `desk report` prints it under the missing view. `desk discover-models
+gemini` lists what the provider serves and exits 1 if a pinned model is gone.
+
 Cost: one Gemini Flash call per ticker per run, about 2k tokens in and 400
 out, well under a cent. The free tier covers it; its terms allow prompt use for
 training, which is acceptable for public SIM data.

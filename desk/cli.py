@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__, analysts, benchmark, config as cfgmod, datapack, guard
-from .llm import LlmClient, OpenAICompatClient
+from .llm import LlmClient, LlmError, OpenAICompatClient, list_models
 from .config import Config
 from .db import connect, j, now
 from .mcp_client import McpClient, McpConnectError
@@ -45,6 +45,22 @@ async def cmd_discover(cfg: Config, which: str) -> None:
         for t in await c.list_tools():
             print(f"{t['name']:32s} args={','.join(t['args'])}")
             print(f"{'':32s} {t['description'][:110]}")
+
+
+def cmd_discover_models(cfg: Config, provider: str) -> None:
+    prov = cfg.providers.get(provider)
+    if prov is None:
+        sys.exit(f"unknown provider {provider!r}; configured: {sorted(cfg.providers)}")
+    pinned = {r.model for r in cfg.roles.values() if r.provider == provider}
+    names = list_models(prov)
+    for n in names:
+        mark = "  <-- pinned in config" if n in pinned else ""
+        print(f"{n}{mark}")
+    missing = sorted(pinned - set(names))
+    if missing:
+        print(f"\nWARNING: pinned model(s) not served by {provider}: {missing}", file=sys.stderr)
+        sys.exit(1)
+    print(f"\n{len(names)} models; every pinned model is served.")
 
 
 async def cmd_guard(cfg: Config) -> None:
@@ -165,6 +181,13 @@ def cmd_report(cfg: Config) -> int:
             flag = "" if r["views"] == r["views_expected"] else "  <-- MISSING VIEW"
             print(f"  {r['day']}  {r['run_id']}  views {r['views']}/{r['views_expected']}  "
                   f"rejected attempts {r['rejected']}  cost ${r['cost']:.4f}{flag}")
+            if flag:
+                last = con.execute(
+                    "SELECT ticker, role, error FROM llm_calls WHERE run_id=? AND error IS NOT NULL ORDER BY id DESC LIMIT 1",
+                    (r["run_id"],),
+                ).fetchone()
+                if last:
+                    print(f"      last error ({last['ticker']}, {last['role']}): {last['error'][:200]}")
     return 1 if bad else 0
 
 
@@ -206,6 +229,8 @@ def main(argv: list[str] | None = None) -> None:
     sub = p.add_subparsers(dest="cmd", required=True)
     d = sub.add_parser("discover-tools", help="list the tools an MCP server exposes")
     d.add_argument("server", choices=["saxo", "fmp"])
+    dm = sub.add_parser("discover-models", help="list the models a provider serves; exit 1 if a pinned model is missing")
+    dm.add_argument("provider")
     sub.add_parser("guard", help="run the startup guard only")
     sub.add_parser("run", help="one full run: guard, data packs, benchmark snapshot")
     sub.add_parser("report", help="recent runs, benchmark, same-day hash check, analyst views")
@@ -225,6 +250,8 @@ def main(argv: list[str] | None = None) -> None:
     try:
         if a.cmd == "discover-tools":
             asyncio.run(cmd_discover(cfg, a.server))
+        elif a.cmd == "discover-models":
+            cmd_discover_models(cfg, a.provider)
         elif a.cmd == "guard":
             asyncio.run(cmd_guard(cfg))
         elif a.cmd == "run":
@@ -238,7 +265,7 @@ def main(argv: list[str] | None = None) -> None:
     except guard.GuardFailure as e:
         print(f"GUARD FAILED: {e}", file=sys.stderr)
         sys.exit(2)
-    except McpConnectError as e:
+    except (McpConnectError, LlmError) as e:
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(3)
 
