@@ -148,12 +148,33 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+# Columns added after a table first shipped. CREATE TABLE IF NOT EXISTS does not
+# alter existing tables, so each (table, column, declaration) is applied here.
+MIGRATIONS: list[tuple[str, str, str]] = [
+    ("llm_calls", "attempt", "INTEGER"),
+    ("llm_calls", "error", "TEXT"),                 # NULL when the attempt produced a valid view
+    ("analyst_views", "stance", "TEXT"),
+    ("analyst_views", "horizon_days", "INTEGER"),
+    ("analyst_views", "created_at", "TEXT"),
+    ("runs", "views_expected", "INTEGER"),          # tickers x analysts configured for that run
+]
+
+
+def _migrate(con: sqlite3.Connection) -> None:
+    for table, col, decl in MIGRATIONS:
+        cols = {r[1] for r in con.execute(f"PRAGMA table_info({table})")}
+        if col not in cols:
+            con.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+    con.commit()
+
+
 def connect(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(path)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA journal_mode=WAL")
     con.executescript(SCHEMA)
+    _migrate(con)
     return con
 
 

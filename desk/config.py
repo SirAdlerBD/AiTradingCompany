@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class Environment(str, Enum):
@@ -52,6 +52,27 @@ class Storage(BaseModel):
     db_path: Path
 
 
+class Provider(BaseModel):
+    name: str = ""
+    base_url: str                       # OpenAI-compatible chat-completions root
+    api_key_env: str                    # name of the env var, never the key
+
+
+class Role(BaseModel):
+    provider: str
+    model: str
+    temperature: float = 0.2
+    max_tokens: int = 1500
+    json_mode: bool = True
+    price_in_per_m: float = 0.0         # USD per 1M tokens, for the cost column only
+    price_out_per_m: float = 0.0
+
+
+class Pipeline(BaseModel):
+    analysts: list[str] = Field(default_factory=list)   # role names to run per ticker; [] = phase 0
+    max_attempts: int = Field(default=2, ge=1, le=4)     # per view, rejected answers are fed back once
+
+
 class Config(BaseModel):
     environment: Environment
     saxo_mcp: McpServer
@@ -59,8 +80,21 @@ class Config(BaseModel):
     universe: Universe
     benchmark: Benchmark
     storage: Storage
-    roles: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    providers: dict[str, Provider] = Field(default_factory=dict)
+    roles: dict[str, Role] = Field(default_factory=dict)
+    pipeline: Pipeline = Field(default_factory=Pipeline)
     raw_hash: str = ""
+
+    @model_validator(mode="after")
+    def _wire(self) -> "Config":
+        for name, prov in self.providers.items():
+            prov.name = prov.name or name
+        for r in self.pipeline.analysts:
+            if r not in self.roles:
+                raise ValueError(f"pipeline.analysts names unknown role {r!r}")
+            if self.roles[r].provider not in self.providers:
+                raise ValueError(f"role {r!r} names unknown provider {self.roles[r].provider!r}")
+        return self
 
 
 def load(path: str | Path = "config/desk.yaml") -> Config:
