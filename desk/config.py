@@ -59,6 +59,7 @@ class Benchmark(BaseModel):
 
 class Storage(BaseModel):
     db_path: Path
+    reports_dir: Path | None = None       # default: <db dir>/reports
 
 
 class Provider(BaseModel):

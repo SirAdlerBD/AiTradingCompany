@@ -1,6 +1,6 @@
 [project]
 name = "desk"
-version = "0.2.0"
+version = "0.2.1"
 description = "Multi-agent trading research desk (SIM only). Phase 2: analysts, trader, risk rules, shadow ledger."
 requires-python = ">=3.11"
 dependencies = [
@@ -13,6 +13,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+charts = ["matplotlib>=3.8"]     # PNG for `desk performance`; without it an SVG is written instead
 
 [project.scripts]
 desk = "desk.cli:main"
