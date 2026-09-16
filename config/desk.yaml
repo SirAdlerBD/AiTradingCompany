@@ -1,0 +1,69 @@
+# Phase 0 config. Everything a run needs, nothing it must not have.
+# Secrets never live here: they come from /etc/desk/desk.env (see deploy/).
+
+environment: SIM          # the only value the code accepts; see desk/guard.py
+
+# Saxo SIM MCP server: the saxo-mcp repo's dist/http-server.js, pm2-managed,
+# listening on 127.0.0.1:HTTP_PORT (default 3000). Its Host check only
+# accepts localhost/127.0.0.1, so keep the loopback URL.
+saxo_mcp:
+  url: http://127.0.0.1:3000/mcp
+  auth_style: bearer                      # saxo-mcp wants "Authorization: Bearer <MCP_ACCESS_TOKEN>"
+  auth_env: SAXO_SIM_MCP_TOKEN            # name of the env var, never the token
+  sim_account_keys_env: SAXO_SIM_ACCOUNT_KEYS   # comma-separated allowlist in env
+  require_trading_disabled: true          # guard aborts if the MCP reports SAXO_TRADING=enabled (until phase 5)
+  # Tool names exactly as registered in saxo-mcp/src/tools/*.ts.
+  tools:
+    account_summary: get_account_summary
+    balances: get_balances
+    positions: get_positions
+    orders: get_orders
+    search: search_instruments
+    details: get_instrument_details
+    price: get_instrument_price
+    chart: get_chart_data
+
+# FMP MCP server (https://site.financialmodelingprep.com/developer/docs/mcp-server).
+# Disabled until you have run `desk discover-tools fmp` and filled in the tool
+# names below; while disabled the data pack carries fundamentals: {}.
+fmp_mcp:
+  enabled: false
+  url: https://mcp.financialmodelingprep.com/mcp   # TODO: confirm against the FMP docs
+  auth_style: query                        # bearer | query | header (FMP: check docs)
+  auth_env: FMP_API_KEY
+  auth_param: apikey                       # query parameter / header name when style != bearer
+  symbol_arg: symbol                       # argument name the FMP tools take for the ticker
+  tools:
+    profile: ""
+    ratios: ""
+    growth: ""
+    income: ""
+    balance: ""
+    peers: ""
+
+universe:
+  # Long-only US/EU large caps. Saxo UIC + AssetType resolved once, cached in
+  # the `instruments` table, and matched on symbol + exchange + currency.
+  tickers:
+    - {symbol: MSFT, exchange: NASDAQ, currency: USD}
+  history_days: 250        # daily bars in the data pack (Saxo max 1200 per call)
+
+benchmark:
+  # Same start capital bought into the index ETF on the first run date.
+  # SXR8 = iShares Core S&P 500 UCITS (acc), EUR on Xetra: honest for a EUR
+  # account without FX noise. Use {symbol: SPY, exchange: NYSE_ARCA, currency: USD}
+  # for a USD account.
+  symbol: SXR8
+  exchange: XETR
+  currency: EUR
+  start_capital: 100000    # shadow-ledger starting capital, in account currency
+
+storage:
+  db_path: /var/lib/desk/desk.sqlite
+
+# Phase 1+ only. Present now so the schema is fixed; unused in phase 0.
+roles:
+  technical_analyst: {model: gemini/gemini-2.5-flash, temperature: 0.2}
+  fundamentals_analyst: {model: gemini/gemini-2.5-flash, temperature: 0.2}
+  moderator: {model: gemini/gemini-2.5-flash, temperature: 0.3}
+  trader: {model: anthropic/claude-sonnet-4-6, temperature: 0.1}

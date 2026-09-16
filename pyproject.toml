@@ -1,0 +1,27 @@
+[project]
+name = "desk"
+version = "0.0.1"
+description = "Multi-agent trading research desk (SIM only). Phase 0: data plumbing, no LLM."
+requires-python = ">=3.11"
+dependencies = [
+  "mcp>=2.0",
+  "pydantic>=2.7",
+  "pyyaml>=6.0",
+  # phase 1+: "litellm>=1.40"
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+desk = "desk.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["desk*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
