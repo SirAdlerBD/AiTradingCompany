@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS runs (
   error         TEXT
 );
 
--- Saxo UIC + AssetType per (symbol, exchange), resolved once via search_instruments.
+-- Saxo UIC + AssetType per (symbol, mic), resolved once via search_instruments.
+-- `exchange` holds the MIC from config (xnas, xetr); Saxo's own ExchangeId is not stored.
 CREATE TABLE IF NOT EXISTS instruments (
   symbol      TEXT NOT NULL,
   exchange    TEXT NOT NULL,

@@ -32,7 +32,7 @@ class McpServer(BaseModel):
 
 class Ticker(BaseModel):
     symbol: str
-    exchange: str
+    mic: str        # listing as the suffix of Saxo's Symbol field: MSFT:xnas -> xnas
     currency: str
 
 
@@ -43,7 +43,7 @@ class Universe(BaseModel):
 
 class Benchmark(BaseModel):
     symbol: str
-    exchange: str
+    mic: str
     currency: str
     start_capital: float = Field(gt=0)
 

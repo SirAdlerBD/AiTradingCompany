@@ -11,11 +11,12 @@ from mcp.server.mcpserver import MCPServer
 from desk import config as cfgmod
 
 SIM_KEY = "SimAcc123"
+# Shapes and ExchangeId codes as observed on the real SIM server.
 INSTRUMENTS = {
     "MSFT": {"Identifier": 1234, "Symbol": "MSFT:xnas", "Description": "Microsoft Corp.",
              "AssetType": "Stock", "ExchangeId": "NASDAQ", "CurrencyCode": "USD"},
     "SXR8": {"Identifier": 9876, "Symbol": "SXR8:xetr", "Description": "iShares Core S&P 500 UCITS",
-             "AssetType": "Etf", "ExchangeId": "XETR", "CurrencyCode": "EUR"},
+             "AssetType": "Etf", "ExchangeId": "XETR_ETF", "CurrencyCode": "EUR"},
 }
 
 
@@ -44,10 +45,15 @@ def make_saxo(*, trading="DISABLED (hard block): this server cannot place, modif
         """Search instruments"""
         log.append(("search_instruments", {"keywords": keywords, "assetTypes": assetTypes,
                                            "exchangeId": exchangeId, "includeNonTradable": includeNonTradable}))
-        hits = [i for i in INSTRUMENTS.values() if keywords.upper() in i["Symbol"].upper()]
-        # a decoy with the same symbol on another exchange, to exercise matching
-        hits += [{"Identifier": 5555, "Symbol": f"{keywords.upper()}:xmil", "Description": "decoy",
-                  "AssetType": "Stock", "ExchangeId": "MIL", "CurrencyCode": "EUR"}]
+        # Real Saxo behaviour: a wrong ExchangeId filter silently returns nothing.
+        if exchangeId and exchangeId.upper() not in {i["ExchangeId"] for i in INSTRUMENTS.values()}:
+            return {"count": 0, "hint": "Use Identifier as `uic`...", "instruments": []}
+        # decoys first, like a real search: same ticker on another venue, and a near-miss ticker
+        hits = [{"Identifier": 5555, "Symbol": f"{keywords.upper()}:xmil", "Description": "decoy",
+                 "AssetType": "Stock", "ExchangeId": "MIL", "CurrencyCode": "EUR"},
+                {"Identifier": 5556, "Symbol": f"1{keywords.upper()}:xnas", "Description": "decoy",
+                 "AssetType": "Stock", "ExchangeId": "NASDAQ", "CurrencyCode": "USD"}]
+        hits += [i for i in INSTRUMENTS.values() if keywords.upper() in i["Symbol"].upper()]
         return {"count": len(hits), "hint": "Use Identifier as `uic`...", "instruments": hits}
 
     @srv.tool()

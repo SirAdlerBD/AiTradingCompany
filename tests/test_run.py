@@ -39,9 +39,11 @@ async def test_two_same_day_runs_hash_identically(cfg):
     assert sum(1 for c in calls if c[0] == "search_instruments") == 2
     inst = con.execute("SELECT uic, asset_type FROM instruments WHERE symbol='MSFT'").fetchone()
     assert (inst["uic"], inst["asset_type"]) == (1234, "Stock")
-    # and the fake's decoy on another exchange was not picked
+    # the decoys on another venue / with a near-miss ticker were not picked
     bench = con.execute("SELECT uic, asset_type FROM instruments WHERE symbol='SXR8'").fetchone()
     assert (bench["uic"], bench["asset_type"]) == (9876, "Etf")
+    # and no server-side exchangeId filter was sent (a wrong one returns nothing)
+    assert all(c[1]["exchangeId"] is None for c in calls if c[0] == "search_instruments")
 
     # chart call used saxo-mcp's argument names
     chart = next(c[1] for c in calls if c[0] == "get_chart_data")

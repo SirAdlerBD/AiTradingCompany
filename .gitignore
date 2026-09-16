@@ -9,3 +9,4 @@ __pycache__/
 .pytest_cache/
 desk.env
 config/desk.local.yaml
+COMMIT

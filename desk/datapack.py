@@ -3,6 +3,8 @@
 Shapes below follow saxo-mcp (src/tools/marketdata.ts):
   search_instruments  -> {count, hint, instruments: [{Identifier, Symbol, Description,
                           AssetType, ExchangeId, CurrencyCode, ...}]}
+                         Symbol is '<ticker>:<mic>' (MSFT:xnas, SXR8:xetr); ExchangeId is a
+                         Saxo code (NASDAQ, FSE, XETR_ETF, NYSE_ARCA) and varies by asset type.
   get_chart_data      -> {count, chartInfo, displayAndFormat, bars: [{Time, Open, High,
                           Low, Close, Volume?, Interest?}]}
   get_instrument_price-> Saxo infoprice: {Quote: {Bid, Ask, Mid, MarketState?, DelayedByMinutes?},
@@ -25,45 +27,57 @@ class InstrumentNotFound(LookupError):
     pass
 
 
-def _sym(s: Any) -> str:
-    """Saxo symbols look like 'MSFT:xnas'; compare the part before the colon."""
-    return str(s or "").split(":")[0].upper()
+def _listing(s: Any) -> tuple[str, str]:
+    """Saxo symbols look like 'MSFT:xnas': ticker plus the listing's MIC. Return (ticker, mic)."""
+    sym, _, mic = str(s or "").partition(":")
+    return sym.upper(), mic.lower()
 
 
-def match_instrument(hits: list[dict[str, Any]], symbol: str, exchange: str | None,
+def match_instrument(hits: list[dict[str, Any]], symbol: str, mic: str,
                      currency: str | None) -> dict[str, Any]:
-    """Pick the one search result that matches symbol, exchange and currency.
-    Falls back in that order; raises if the symbol never matches."""
-    by_symbol = [h for h in hits if _sym(h.get("Symbol")) == symbol.upper()]
-    if not by_symbol:
-        raise InstrumentNotFound(f"no search hit with Symbol {symbol!r} among {[h.get('Symbol') for h in hits]}")
-    cands = by_symbol
-    if exchange:
-        m = [h for h in cands if str(h.get("ExchangeId", "")).upper() == exchange.upper()]
-        cands = m or cands
+    """Pick the search result whose Symbol is exactly '<symbol>:<mic>'.
+
+    Saxo's ExchangeId is an internal code that differs by asset type on the
+    same venue (Xetra stocks are FSE, Xetra ETFs are XETR_ETF), so it is not
+    used for matching; the MIC suffix of Symbol is consistent. Currency is a
+    tiebreaker, then a sanity check.
+    """
+    want = (symbol.upper(), mic.lower())
+    cands = [h for h in hits if _listing(h.get("Symbol")) == want]
+    if not cands:
+        raise InstrumentNotFound(
+            f"no search hit with Symbol {symbol.upper()}:{mic.lower()} among {[h.get('Symbol') for h in hits]}"
+        )
     if currency:
         m = [h for h in cands if str(h.get("CurrencyCode", "")).upper() == currency.upper()]
-        cands = m or cands
+        if not m:
+            raise InstrumentNotFound(
+                f"{symbol}:{mic} found but not in {currency}: {[h.get('CurrencyCode') for h in cands]}"
+            )
+        cands = m
     return cands[0]
 
 
 async def resolve_instrument(cfg: Config, saxo: McpClient, con: sqlite3.Connection | None,
-                             symbol: str, exchange: str, currency: str | None,
+                             symbol: str, mic: str, currency: str | None,
                              asset_types: str = "Stock",
                              include_non_tradable: bool = False) -> dict[str, Any]:
     if con is not None:
         row = con.execute("SELECT uic, asset_type, currency, description, saxo_symbol FROM instruments "
-                          "WHERE symbol=? AND exchange=?", (symbol, exchange)).fetchone()
+                          "WHERE symbol=? AND exchange=?", (symbol, mic)).fetchone()
         if row:
             return {"uic": row["uic"], "asset_type": row["asset_type"], "currency": row["currency"],
                     "description": row["description"], "saxo_symbol": row["saxo_symbol"]}
 
-    args: dict[str, Any] = {"keywords": symbol, "assetTypes": asset_types, "exchangeId": exchange, "top": 50}
+    # No server-side exchangeId filter: Saxo's ExchangeId codes are not what
+    # you would guess (see match_instrument), and a wrong one silently returns
+    # nothing. Symbol search plus client-side matching on the MIC is robust.
+    args: dict[str, Any] = {"keywords": symbol, "assetTypes": asset_types, "top": 100}
     if include_non_tradable:
         args["includeNonTradable"] = True
     res = await saxo.call(cfg.saxo_mcp.tools["search"], args)
     hits = res.get("instruments", []) if isinstance(res, dict) else (res or [])
-    hit = match_instrument(hits, symbol, exchange, currency)
+    hit = match_instrument(hits, symbol, mic, currency)
     inst = {
         "uic": int(hit["Identifier"]),
         "asset_type": str(hit.get("AssetType") or asset_types.split(",")[0]),
@@ -75,7 +89,7 @@ async def resolve_instrument(cfg: Config, saxo: McpClient, con: sqlite3.Connecti
         con.execute(
             "INSERT OR REPLACE INTO instruments(symbol, exchange, uic, asset_type, currency, description, saxo_symbol, resolved_at) "
             "VALUES (?,?,?,?,?,?,?,?)",
-            (symbol, exchange, inst["uic"], inst["asset_type"], inst["currency"], inst["description"],
+            (symbol, mic, inst["uic"], inst["asset_type"], inst["currency"], inst["description"],
              inst["saxo_symbol"], now()),
         )
         con.commit()
@@ -96,7 +110,7 @@ async def fetch_quote(cfg: Config, saxo: McpClient, inst: dict[str, Any]) -> dic
 
 async def build(cfg: Config, saxo: McpClient, fmp: McpClient | None, con: sqlite3.Connection | None, t,
                 today: date | None = None) -> dict[str, Any]:
-    inst = await resolve_instrument(cfg, saxo, con, t.symbol, t.exchange, t.currency, "Stock")
+    inst = await resolve_instrument(cfg, saxo, con, t.symbol, t.mic, t.currency, "Stock")
     bars = await fetch_bars(cfg, saxo, inst, cfg.universe.history_days)
     bars = drop_partial(bars, today or date.today())
     quote = await fetch_quote(cfg, saxo, inst)

@@ -43,6 +43,12 @@ saxo-mcp's HTTP server must already be running under pm2 on
    `fmp_mcp.tools` and set `fmp_mcp.enabled: true`. Until then the pack carries
    `fundamentals: {}`.
 
+**After every `git pull`, rerun `sudo ./deploy/install.sh`.** The service runs
+the copy in `/opt/desk`, not your clone; the script rsyncs it and records the
+deployed commit in `/opt/desk/COMMIT`. Every `desk` command prints the version,
+commit and config path it is using on its first line, so a stale copy is
+visible at a glance.
+
 Running by hand as the service user:
 
 ```
@@ -66,9 +72,14 @@ Verified against saxo-mcp's source (`src/tools/marketdata.ts`,
 `instruments[]`, `bars[]` and `accounts[]` envelopes, and the `trading` string
 in the account summary. The tests use exactly these shapes.
 
+Verified on the SIM account itself: `SXR8:xetr` (UIC 1095726, EUR) and
+`MSFT:xnas` (UIC 261, USD) resolve. Saxo's `ExchangeId` is an internal code
+that differs by asset type on one venue (Xetra stocks `FSE`, Xetra ETFs
+`XETR_ETF`) and a wrong value as a search filter silently returns nothing, so
+listings are identified by symbol + MIC (the two halves of Saxo's `Symbol`)
+and matched client-side.
+
 Still assumed, check on first real run:
-- Saxo `ExchangeId` values for your universe (`NASDAQ`, `NYSE`, `XETR`), and
-  that `SXR8` is searchable on your SIM account with `includeNonTradable`.
 - The FMP MCP URL, auth style and tool names (`fmp_mcp` is disabled by default).
 - Saxo's infoprice `Quote.Mid` is present for stocks; if not, the code derives
   mid from bid/ask, then falls back to `LastTraded`.

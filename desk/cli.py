@@ -6,20 +6,35 @@ import asyncio
 import subprocess
 import sys
 import uuid
+from pathlib import Path
 from typing import Any
 
-from . import benchmark, config as cfgmod, datapack, guard
+from . import __version__, benchmark, config as cfgmod, datapack, guard
 from .config import Config
 from .db import connect, j, now
 from .mcp_client import McpClient, McpConnectError
 
 
+PKG_DIR = Path(__file__).resolve().parent
+
+
 def _git() -> str | None:
+    """Commit of the code that is running. /opt/desk has no .git (rsync excludes it),
+    so deploy/install.sh writes the commit to a COMMIT file next to the package."""
+    marker = PKG_DIR.parent / "COMMIT"
+    if marker.exists():
+        return marker.read_text().strip() or None
     try:
-        return subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], text=True,
-                                       stderr=subprocess.DEVNULL).strip()
+        return subprocess.check_output(["git", "-C", str(PKG_DIR), "rev-parse", "--short", "HEAD"],
+                                       text=True, stderr=subprocess.DEVNULL).strip()
     except Exception:
         return None
+
+
+def banner(config_path: str) -> str:
+    """One line that says which code and which config are running. Printed by every
+    command so a stale deployed copy is visible instead of a confusing error."""
+    return f"desk {__version__} commit {_git() or 'unknown'} from {PKG_DIR}, config {Path(config_path).resolve()}"
 
 
 async def cmd_discover(cfg: Config, which: str) -> None:
@@ -128,7 +143,14 @@ def main(argv: list[str] | None = None) -> None:
     sub.add_parser("run", help="one full run: guard, data packs, benchmark snapshot")
     sub.add_parser("report", help="recent runs, benchmark, same-day hash check")
     a = p.parse_args(argv)
-    cfg = cfgmod.load(a.config)
+    print(banner(a.config))
+    try:
+        cfg = cfgmod.load(a.config)
+    except Exception as e:
+        print(f"CONFIG ERROR in {a.config}: {e}", file=sys.stderr)
+        print("If the error names a field this version does not use, the deployed copy is stale: "
+              "rerun deploy/install.sh from the repo you pulled.", file=sys.stderr)
+        sys.exit(4)
     try:
         if a.cmd == "discover-tools":
             asyncio.run(cmd_discover(cfg, a.server))
