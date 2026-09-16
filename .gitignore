@@ -1,0 +1,11 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.egg-info/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+.pytest_cache/
+desk.env
+config/desk.local.yaml

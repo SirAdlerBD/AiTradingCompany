@@ -1,0 +1,11 @@
+[Unit]
+Description=Run desk every weekday after US close
+
+[Timer]
+# 22:30 Europe/Brussels is after the NYSE close year-round.
+OnCalendar=Mon..Fri 22:30 Europe/Brussels
+Persistent=true
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,19 @@
+[Unit]
+Description=desk: trading research batch run (SIM only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=desk
+Group=desk
+WorkingDirectory=/opt/desk
+EnvironmentFile=/etc/desk/desk.env
+ExecStart=/opt/desk/.venv/bin/desk --config /opt/desk/config/desk.yaml run
+TimeoutStartSec=15min
+# Hardening: this process has no reason to write anywhere but its DB.
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/desk
+PrivateTmp=yes
+NoNewPrivileges=yes
