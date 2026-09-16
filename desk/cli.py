@@ -41,12 +41,21 @@ def banner(config_path: str) -> str:
     return f"desk {__version__} commit {_git() or 'unknown'} from {PKG_DIR}, config {Path(config_path).resolve()}"
 
 
-async def cmd_discover(cfg: Config, which: str) -> None:
-    server = cfg.saxo_mcp if which == "saxo" else cfg.fmp_mcp
+async def cmd_discover(cfg: Config, which: str, url: str | None = None, auth: str | None = None) -> None:
+    """List a server's tools. --url/--auth try a candidate endpoint without editing config,
+    which is how the FMP MCP URL and auth style get confirmed on the VPS."""
+    server = (cfg.saxo_mcp if which == "saxo" else cfg.fmp_mcp).model_copy()
+    if url:
+        server.url = url
+    if auth:
+        server.auth_style = auth
+    print(f"connecting to {server.url} with auth {server.auth_style} ({server.auth_env})")
     async with McpClient(server, which) as c:
-        for t in await c.list_tools():
-            print(f"{t['name']:32s} args={','.join(t['args'])}")
-            print(f"{'':32s} {t['description'][:110]}")
+        tools = await c.list_tools()
+    for t in tools:
+        print(f"{t['name']:32s} args={','.join(t['args'])}")
+        print(f"{'':32s} {t['description'][:110]}")
+    print(f"\n{len(tools)} tools. Put url and auth_style in config/desk.yaml under {which}_mcp and set enabled: true.")
 
 
 def cmd_discover_models(cfg: Config, provider: str) -> None:
@@ -138,6 +147,13 @@ def monitor(cfg: Config, con, run_id: str, rules: risk.RuleSet, packs: dict[str,
             log(f"{ticker}: {reason}")
 
 
+def warn(con, run_id: str, text: str, log=print) -> None:
+    """Append a warning to the run row; the run itself stays ok."""
+    log(f"WARNING {text}")
+    con.execute("UPDATE runs SET warnings = COALESCE(warnings || '\n', '') || ? WHERE run_id=?", (text, run_id))
+    con.commit()
+
+
 def _sector(stable: dict | None) -> str | None:
     if not stable:
         return None
@@ -179,10 +195,22 @@ async def run_once(cfg: Config, con, *, saxo_inproc: Any | None = None, fmp_inpr
             con.execute("UPDATE runs SET account_key=? WHERE run_id=?", (key, run_id))
             con.commit()
             fmp_cm = McpClient(cfg.fmp_mcp, "fmp", inproc=fmp_inproc) if fmp_on else None
-            fmp = await fmp_cm.__aenter__() if fmp_cm else None
+            fmp = None
+            if fmp_cm:
+                try:
+                    fmp = await fmp_cm.__aenter__()
+                except (McpConnectError, Exception) as e:  # noqa: BLE001 - FMP is optional data, never fatal
+                    fmp_cm = None
+                    warn(con, run_id, f"fmp unreachable, fundamentals empty this run: {str(e)[:200]}", log)
             try:
                 for t in cfg.universe.tickers:
-                    pack = await datapack.build(cfg, saxo, fmp, con, t, today=today)
+                    try:
+                        pack = await datapack.build(cfg, saxo, fmp, con, t, today=today)
+                    except Exception as e:  # noqa: BLE001
+                        if fmp is None or not datapack.is_fmp_failure(e):
+                            raise
+                        warn(con, run_id, f"{t.symbol}: fmp fetch failed, fundamentals empty: {str(e)[:200]}", log)
+                        pack = await datapack.build(cfg, saxo, None, con, t, today=today)
                     con.execute(
                         "INSERT INTO data_packs(run_id, ticker, stable_json, stable_hash, volatile_json, created_at) "
                         "VALUES (?,?,?,?,?,?)",
@@ -257,10 +285,11 @@ def cmd_report(cfg: Config) -> int:
     """Recent runs, benchmark, same-day hash check, analyst views. Returns 1 on a hash mismatch."""
     con = connect(cfg.storage.db_path)
     print("runs:")
-    for r in con.execute("SELECT run_id, started_at, status, account_key, git_commit, error, decided FROM runs ORDER BY started_at DESC LIMIT 10"):
+    for r in con.execute("SELECT run_id, started_at, status, account_key, git_commit, error, decided, warnings FROM runs ORDER BY started_at DESC LIMIT 10"):
         err = f"  {r['error'][:60]}" if r["error"] else ""
         dec = "  decided" if r["decided"] else ""
-        print(f"  {r['run_id']}  {r['started_at']}  {r['status']:12s} {r['git_commit'] or '-':8s} {r['account_key'] or '-'}{dec}{err}")
+        wrn = f"  WARN: {r['warnings'].splitlines()[0][:70]}" if r["warnings"] else ""
+        print(f"  {r['run_id']}  {r['started_at']}  {r['status']:12s} {r['git_commit'] or '-':8s} {r['account_key'] or '-'}{dec}{err}{wrn}")
     print("benchmark:")
     for r in con.execute("SELECT date, symbol, currency, price, value FROM benchmark_snapshots ORDER BY date DESC LIMIT 5"):
         print(f"  {r['date']}  {r['symbol']}  {r['price']:.2f} {r['currency'] or ''}  value {r['value']:.2f}")
@@ -448,6 +477,8 @@ def main(argv: list[str] | None = None) -> None:
     sub = p.add_subparsers(dest="cmd", required=True)
     d = sub.add_parser("discover-tools", help="list the tools an MCP server exposes")
     d.add_argument("server", choices=["saxo", "fmp"])
+    d.add_argument("--url", help="try this endpoint instead of the configured one")
+    d.add_argument("--auth", choices=["bearer", "query", "header"], help="try this auth style instead of the configured one")
     dm = sub.add_parser("discover-models", help="list the models a provider serves; exit 1 if a pinned model is missing")
     dm.add_argument("provider")
     sub.add_parser("guard", help="run the startup guard only")
@@ -480,7 +511,7 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(4)
     try:
         if a.cmd == "discover-tools":
-            asyncio.run(cmd_discover(cfg, a.server))
+            asyncio.run(cmd_discover(cfg, a.server, a.url, a.auth))
         elif a.cmd == "discover-models":
             cmd_discover_models(cfg, a.provider)
         elif a.cmd == "guard":

@@ -89,3 +89,27 @@ def test_prompt_file_override_and_sections(cfg, tmp_path):
     stable = {"ticker": {"symbol": "X"}, "instrument": {"description": "X Corp"}, "indicators": {"last_close": 1.0}, "bars": [{"close": 1}]}
     system, user, fields = analysts.build_prompt(cfg, "technical_analyst", stable, "2026-09-15")
     assert system.startswith("You are a custom analyst") and list(fields) == ["indicators.last_close"]
+
+
+async def test_fmp_failure_is_a_warning_not_a_failed_run(cfg, monkeypatch):
+    cfg.fmp_mcp.enabled = True
+    cfg.pipeline.analysts, cfg.pipeline.trader = [], None
+    con = connect(cfg.storage.db_path)
+    broken = MCPServer("broken-fmp")
+
+    @broken.tool()
+    def company(endpoint: str, symbol: str | None = None) -> list:
+        """Always fails"""
+        raise RuntimeError("upstream 502")
+
+    run_id = await cli.run_once(cfg, con, saxo_inproc=make_saxo(today=D0), fmp_inproc=broken, today=D0, log=lambda *_: None)
+    r = con.execute("SELECT status, warnings FROM runs WHERE run_id=?", (run_id,)).fetchone()
+    assert r["status"] == "ok" and "fmp fetch failed" in r["warnings"] and "profile" in r["warnings"]
+    stable = json.loads(con.execute("SELECT stable_json FROM data_packs WHERE run_id=?", (run_id,)).fetchone()["stable_json"])
+    assert stable["fundamentals"] == {}
+
+    # unreachable server (connection refused) is also a warning
+    cfg.fmp_mcp.url = "http://127.0.0.1:9/mcp"
+    run_id = await cli.run_once(cfg, con, saxo_inproc=make_saxo(today=D0), fmp_inproc=None, today=D0, log=lambda *_: None)
+    r = con.execute("SELECT status, warnings FROM runs WHERE run_id=?", (run_id,)).fetchone()
+    assert r["status"] == "ok" and "fmp unreachable" in r["warnings"]

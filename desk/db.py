@@ -159,6 +159,7 @@ MIGRATIONS: list[tuple[str, str, str]] = [
     ("runs", "views_expected", "INTEGER"),          # tickers x analysts configured for that run
     ("runs", "decided", "INTEGER"),                 # 1 if the trader ran in this run
     ("runs", "run_date", "TEXT"),                   # the business date the run marked (YYYY-MM-DD)
+    ("runs", "warnings", "TEXT"),                   # non-fatal problems, one per line (e.g. FMP unreachable)
     ("trader_proposals", "sided_with_json", "TEXT"),
     ("trader_proposals", "stop_json", "TEXT"),      # {field, op, value} evaluated by code daily
     ("trader_proposals", "horizon_days", "INTEGER"),
