@@ -1,9 +1,15 @@
-# desk — phase 0
+# desk — phase 1
 
 A multi-agent trading research desk that runs against a Saxo **SIM** account
-only. Phase 0 is the plumbing: a scheduled batch job (systemd timer) that
-starts, passes a startup guard, freezes one hashed data pack per ticker,
-snapshots the benchmark, writes SQLite, and exits. No LLM calls yet.
+only. A scheduled batch job (systemd timer) starts, passes a startup guard,
+freezes one hashed data pack per ticker, asks each configured analyst for a
+view on that pack, snapshots the benchmark, writes SQLite, and exits.
+
+Phase 0 (done) was the plumbing with no model calls. Phase 1 adds one
+technical analyst (Gemini Flash) whose output is validated against the data
+pack: a view is stored only if it is schema-valid and every evidence item
+names a real field of the pack and quotes its value. Nothing decides or
+trades yet; that is phase 2.
 
 Data comes from two MCP servers that the orchestrator (code, not a model)
 calls: [saxo-mcp](https://github.com/SirAdlerBD/saxo-mcp) for quotes, bars
@@ -18,10 +24,14 @@ config/risk_rules.yaml  deterministic risk rules (evaluated by code from phase 2
 desk/config.py          pydantic config; Environment enum has exactly one member: SIM
 desk/mcp_client.py      thin client over mcp.Client (streamable HTTP or in-process)
 desk/guard.py           startup guard (env, account allowlist, trading hard block)
-desk/datapack.py        instrument resolution, bars, quote, stable hash
+desk/datapack.py        instrument resolution, bars, quote, indicators, stable hash
+desk/indicators.py      deterministic technical indicators computed in code from the bars
+desk/schemas.py         AnalystView (pydantic) and the evidence check against the pack
+desk/llm.py             one call signature per role; OpenAI-compatible HTTP provider (Gemini)
+desk/analysts.py        analyst step: prompt, call, validate, feed rejections back once, store
 desk/benchmark.py       start capital bought into the index ETF on day 0, marked daily
-desk/db.py              SQLite schema; every table carries run_id
-desk/cli.py             desk discover-tools | guard | run | report
+desk/db.py              SQLite schema plus column migrations; every table carries run_id
+desk/cli.py             desk discover-tools | guard | run | report | views | prompt
 deploy/                 systemd unit + timer, install script, env template
 tests/                  fake saxo-mcp in process, same tool names and payload shapes
 ```
@@ -34,8 +44,8 @@ saxo-mcp's HTTP server must already be running under pm2 on
 1. `sudo ./deploy/install.sh` from the repo root. Creates the `desk` system
    user, `/opt/desk`, `/var/lib/desk`, a venv, and enables the timer.
 2. Fill `/etc/desk/desk.env`: the saxo-mcp `MCP_ACCESS_TOKEN` as
-   `SAXO_SIM_MCP_TOKEN`, and every SIM `AccountKey` from `get_account_summary`
-   as `SAXO_SIM_ACCOUNT_KEYS`.
+   `SAXO_SIM_MCP_TOKEN`, every SIM `AccountKey` from `get_account_summary`
+   as `SAXO_SIM_ACCOUNT_KEYS`, and a Google AI Studio key as `GEMINI_API_KEY`.
 3. `desk guard` must print `guard ok, SIM account <key>`.
 4. `desk run` twice on the same day, then `desk report`. The report exits 1 if
    any ticker has more than one data-pack hash on one day.
@@ -55,10 +65,44 @@ Running by hand as the service user:
 sudo systemctl start desk.service && journalctl -u desk -n 30
 ```
 
-## Phase 0 exit criteria
+## How an analyst view is produced
 
-- Two same-day runs produce identical `stable_hash` per ticker (`desk report`
-  checks this; `tests/test_run.py` proves it against the fake server).
+1. The data pack's `ticker`, `instrument`, `indicators` and last 20 bars are
+   flattened to `key: value` lines (about 150 citable fields, ~2k tokens).
+2. The analyst gets that block and a fixed system prompt (`desk/analysts.py`).
+   The technical analyst's one question: is entry timing acceptable this week,
+   and what would make that wrong? It has no tools and no outside knowledge.
+3. The answer must be one JSON object matching `AnalystView`: stance, thesis,
+   2-8 evidence items `{field, value, why}`, confidence, `would_be_wrong_if`,
+   horizon. Every evidence `field` must be a key from the block and `value`
+   must equal the pack's value (numbers within 0.5%).
+4. A rejected answer is sent back once with the exact problems. Every attempt
+   is stored in `llm_calls` with its error; only a valid view reaches
+   `analyst_views`. A missing view never fails the run; `desk report` shows it.
+
+`desk prompt MSFT` prints the exact prompt from the latest stored pack without
+calling a model, for prompt work. `desk views` prints recent views with their
+evidence.
+
+Cost: one Gemini Flash call per ticker per run, about 2k tokens in and 400
+out, well under a cent. The free tier covers it; its terms allow prompt use for
+training, which is acceptable for public SIM data.
+
+## Phase 1 exit criteria
+
+- Five consecutive daily runs each store a valid view per ticker: `desk
+  report` shows `views 1/1` with no `MISSING VIEW`, and rejected attempts
+  trending to zero. Persistent rejections mean the prompt needs work before
+  anything else is added.
+- Read the views (`desk views --limit 5`): evidence should be the fields a
+  human would pick, and `would_be_wrong_if` should be checkable next week.
+
+## Phase 0 exit criteria (met)
+
+- Two same-day runs produce identical `stable_hash` per ticker. `desk report`
+  compares successful runs with the same config hash and commit only, since a
+  code or config change legitimately changes the pack (the pack embeds the
+  ticker record and the indicator set).
 - `desk guard` fails when any `SAXO_*LIVE*` variable is set, when the MCP
   reports an account key outside the allowlist, or when the MCP reports
   trading enabled.
@@ -81,6 +125,9 @@ and matched client-side.
 
 Still assumed, check on first real run:
 - The FMP MCP URL, auth style and tool names (`fmp_mcp` is disabled by default).
+- Gemini's OpenAI-compatible endpoint (`/v1beta/openai/chat/completions`, bearer
+  key, `response_format: json_object`, `usage.prompt_tokens`). The tests use a
+  fake with that wire shape; the first real `desk run` confirms it.
 - Saxo's infoprice `Quote.Mid` is present for stocks; if not, the code derives
   mid from bid/ask, then falls back to `LastTraded`.
 

@@ -64,9 +64,25 @@ benchmark:
 storage:
   db_path: /var/lib/desk/desk.sqlite
 
-# Phase 1+ only. Present now so the schema is fixed; unused in phase 0.
+# Model providers. All speak the OpenAI chat-completions format; the key comes
+# from the named env var. No provider has tools: analysts reason, they never fetch.
+providers:
+  gemini:
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai
+    api_key_env: GEMINI_API_KEY
+  # anthropic is added in phase 2 with the trader (Messages API adapter).
+
+# One entry per role. Prices are USD per 1M tokens and only feed the cost column.
 roles:
-  technical_analyst: {model: gemini/gemini-2.5-flash, temperature: 0.2}
-  fundamentals_analyst: {model: gemini/gemini-2.5-flash, temperature: 0.2}
-  moderator: {model: gemini/gemini-2.5-flash, temperature: 0.3}
-  trader: {model: anthropic/claude-sonnet-4-6, temperature: 0.1}
+  technical_analyst:
+    provider: gemini
+    model: gemini-2.5-flash
+    temperature: 0.2
+    max_tokens: 1500
+    price_in_per_m: 0.30
+    price_out_per_m: 2.50
+  # phase 3: fundamentals_analyst, moderator (gemini); phase 2: trader (anthropic)
+
+pipeline:
+  analysts: [technical_analyst]   # [] reproduces phase 0 (no model calls)
+  max_attempts: 2                 # a rejected answer is sent back once with the reasons

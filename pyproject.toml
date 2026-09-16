@@ -1,13 +1,13 @@
 [project]
 name = "desk"
-version = "0.0.1"
-description = "Multi-agent trading research desk (SIM only). Phase 0: data plumbing, no LLM."
+version = "0.1.0"
+description = "Multi-agent trading research desk (SIM only). Phase 1: one technical analyst."
 requires-python = ">=3.11"
 dependencies = [
   "mcp>=2.0",
   "pydantic>=2.7",
   "pyyaml>=6.0",
-  # phase 1+: "litellm>=1.40"
+  "httpx>=0.27",
 ]
 
 [project.optional-dependencies]

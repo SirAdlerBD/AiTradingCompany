@@ -18,6 +18,7 @@ import sqlite3
 from datetime import date
 from typing import Any
 
+from . import indicators
 from .config import Config
 from .db import j, now
 from .mcp_client import McpClient
@@ -119,6 +120,7 @@ async def build(cfg: Config, saxo: McpClient, fmp: McpClient | None, con: sqlite
         "ticker": t.model_dump(),
         "instrument": inst,
         "bars": bars,
+        "indicators": indicators.compute(bars),
         "fundamentals": {},
     }
     if fmp is not None:

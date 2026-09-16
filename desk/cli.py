@@ -3,13 +3,15 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import subprocess
 import sys
 import uuid
 from pathlib import Path
 from typing import Any
 
-from . import __version__, benchmark, config as cfgmod, datapack, guard
+from . import __version__, analysts, benchmark, config as cfgmod, datapack, guard
+from .llm import LlmClient, OpenAICompatClient
 from .config import Config
 from .db import connect, j, now
 from .mcp_client import McpClient, McpConnectError
@@ -53,12 +55,18 @@ async def cmd_guard(cfg: Config) -> None:
 
 
 async def run_once(cfg: Config, con, *, saxo_inproc: Any | None = None, fmp_inproc: Any | None = None,
-                   today=None, log=print) -> str:
-    """One full phase-0 run. Returns run_id; raises GuardFailure or the underlying error."""
+                   llm: LlmClient | None = None, today=None, log=print) -> str:
+    """One full run: guard, data packs, analyst views, benchmark. Returns run_id;
+    raises GuardFailure or the underlying error. A rejected analyst view does not
+    fail the run; it shows up in `desk report` as a missing view."""
+    if cfg.pipeline.analysts and llm is None:
+        llm = OpenAICompatClient(cfg.providers)
     run_id = uuid.uuid4().hex[:12]
     con.execute(
-        "INSERT INTO runs(run_id, started_at, status, environment, config_hash, git_commit) VALUES (?,?,?,?,?,?)",
-        (run_id, now(), "running", cfg.environment.value, cfg.raw_hash, _git()),
+        "INSERT INTO runs(run_id, started_at, status, environment, config_hash, git_commit, views_expected) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (run_id, now(), "running", cfg.environment.value, cfg.raw_hash, _git(),
+         len(cfg.universe.tickers) * len(cfg.pipeline.analysts)),
     )
     con.commit()
     try:
@@ -85,6 +93,9 @@ async def run_once(cfg: Config, con, *, saxo_inproc: Any | None = None, fmp_inpr
                     )
                     con.commit()
                     log(f"{t.symbol}: {len(pack['stable']['bars'])} bars, hash {pack['stable_hash'][:12]}")
+                    as_of = pack["stable"]["indicators"].get("as_of") or str(today or "")
+                    for role_name in cfg.pipeline.analysts:
+                        analysts.run_view(cfg, llm, con, run_id, t.symbol, pack["stable"], as_of, role_name, log=log)
             finally:
                 if fmp_cm:
                     await fmp_cm.__aexit__(None, None, None)
@@ -112,25 +123,81 @@ async def cmd_run(cfg: Config) -> None:
 
 
 def cmd_report(cfg: Config) -> int:
-    """Print recent runs, benchmark rows and the same-day hash check. Returns 1 if any day disagrees."""
+    """Recent runs, benchmark, same-day hash check, analyst views. Returns 1 on a hash mismatch."""
     con = connect(cfg.storage.db_path)
     print("runs:")
-    for r in con.execute("SELECT run_id, started_at, status, account_key, error FROM runs ORDER BY started_at DESC LIMIT 10"):
+    for r in con.execute("SELECT run_id, started_at, status, account_key, git_commit, error FROM runs ORDER BY started_at DESC LIMIT 10"):
         err = f"  {r['error'][:60]}" if r["error"] else ""
-        print(f"  {r['run_id']}  {r['started_at']}  {r['status']}  {r['account_key'] or '-'}{err}")
+        print(f"  {r['run_id']}  {r['started_at']}  {r['status']:12s} {r['git_commit'] or '-':8s} {r['account_key'] or '-'}{err}")
     print("benchmark:")
     for r in con.execute("SELECT date, symbol, currency, price, value FROM benchmark_snapshots ORDER BY date DESC LIMIT 5"):
         print(f"  {r['date']}  {r['symbol']}  {r['price']:.2f} {r['currency'] or ''}  value {r['value']:.2f}")
-    print("same-day data-pack hashes (phase 0 exit criterion: one hash per ticker per day):")
+
+    print("same-day data-pack hashes, successful runs with the same code and config only")
+    print("(phase 0 exit criterion: one hash per ticker per day):")
     bad = 0
     for r in con.execute(
-        "SELECT ticker, substr(created_at,1,10) AS day, COUNT(*) AS runs, COUNT(DISTINCT stable_hash) AS hashes "
-        "FROM data_packs GROUP BY ticker, day ORDER BY day DESC, ticker LIMIT 20"
+        "SELECT d.ticker, substr(d.created_at,1,10) AS day, r.config_hash, COALESCE(r.git_commit,'-') AS commit_, "
+        "COUNT(*) AS runs, COUNT(DISTINCT d.stable_hash) AS hashes "
+        "FROM data_packs d JOIN runs r USING(run_id) WHERE r.status='ok' "
+        "GROUP BY d.ticker, day, r.config_hash, commit_ ORDER BY day DESC, d.ticker LIMIT 20"
     ):
         flag = "" if r["hashes"] == 1 else "  <-- MISMATCH"
         bad += r["hashes"] != 1
-        print(f"  {r['day']}  {r['ticker']:8s} runs={r['runs']} distinct_hashes={r['hashes']}{flag}")
+        print(f"  {r['day']}  {r['ticker']:8s} cfg {r['config_hash'][:8]} code {r['commit_']:8s} runs={r['runs']} distinct_hashes={r['hashes']}{flag}")
+    skipped = con.execute(
+        "SELECT COUNT(DISTINCT d.run_id) FROM data_packs d JOIN runs r USING(run_id) WHERE r.status!='ok'"
+    ).fetchone()[0]
+    if skipped:
+        print(f"  ({skipped} non-ok run(s) with data packs excluded)")
+
+    rows = con.execute(
+        "SELECT r.run_id, substr(r.started_at,1,10) AS day, r.views_expected, "
+        "(SELECT COUNT(*) FROM analyst_views v WHERE v.run_id=r.run_id) AS views, "
+        "(SELECT COUNT(*) FROM llm_calls c WHERE c.run_id=r.run_id AND c.error IS NOT NULL) AS rejected, "
+        "(SELECT COALESCE(SUM(cost_usd),0) FROM llm_calls c WHERE c.run_id=r.run_id) AS cost "
+        "FROM runs r WHERE r.status='ok' AND COALESCE(r.views_expected,0) > 0 ORDER BY r.started_at DESC LIMIT 10"
+    ).fetchall()
+    if rows:
+        print("analyst views, last 10 successful runs with analysts configured")
+        print("(phase 1 exit criterion: five consecutive days with every view present):")
+        for r in rows:
+            flag = "" if r["views"] == r["views_expected"] else "  <-- MISSING VIEW"
+            print(f"  {r['day']}  {r['run_id']}  views {r['views']}/{r['views_expected']}  "
+                  f"rejected attempts {r['rejected']}  cost ${r['cost']:.4f}{flag}")
     return 1 if bad else 0
+
+
+def cmd_views(cfg: Config, limit: int) -> None:
+    """Print the latest analyst views with their evidence, newest first."""
+    con = connect(cfg.storage.db_path)
+    rows = con.execute(
+        "SELECT v.*, r.started_at FROM analyst_views v JOIN runs r USING(run_id) ORDER BY v.id DESC LIMIT ?", (limit,)
+    ).fetchall()
+    if not rows:
+        print("no views yet")
+    for v in rows:
+        print(f"== {v['started_at'][:10]}  {v['ticker']}  {v['role']}  {v['stance']}  conf {v['confidence']:.2f}  "
+              f"horizon {v['horizon_days']}d  run {v['run_id']}")
+        print(f"   thesis: {v['thesis']}")
+        for e in json.loads(v["evidence_json"]):
+            print(f"   - {e['field']} = {e['value']}: {e['why']}")
+        print(f"   wrong if: {v['would_be_wrong_if']}")
+
+
+def cmd_prompt(cfg: Config, ticker: str) -> None:
+    """Print the exact analyst prompt built from the latest stored data pack. No model call."""
+    con = connect(cfg.storage.db_path)
+    row = con.execute(
+        "SELECT d.stable_json FROM data_packs d JOIN runs r USING(run_id) WHERE d.ticker=? AND r.status='ok' "
+        "ORDER BY d.created_at DESC LIMIT 1", (ticker,)
+    ).fetchone()
+    if not row:
+        sys.exit(f"no successful data pack for {ticker}; run `desk run` first")
+    stable = json.loads(row["stable_json"])
+    system, user, fields = analysts.technical_prompt(stable, stable.get("indicators", {}).get("as_of", "?"))
+    print("### SYSTEM\n" + system + "\n\n### USER\n" + user)
+    print(f"\n### {len(fields)} citable fields, ~{(len(system) + len(user)) // 4} tokens")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -141,7 +208,11 @@ def main(argv: list[str] | None = None) -> None:
     d.add_argument("server", choices=["saxo", "fmp"])
     sub.add_parser("guard", help="run the startup guard only")
     sub.add_parser("run", help="one full run: guard, data packs, benchmark snapshot")
-    sub.add_parser("report", help="recent runs, benchmark, same-day hash check")
+    sub.add_parser("report", help="recent runs, benchmark, same-day hash check, analyst views")
+    v = sub.add_parser("views", help="print the latest analyst views with evidence")
+    v.add_argument("--limit", type=int, default=5)
+    pr = sub.add_parser("prompt", help="print the analyst prompt for a ticker from the latest data pack (no model call)")
+    pr.add_argument("ticker")
     a = p.parse_args(argv)
     print(banner(a.config))
     try:
@@ -160,6 +231,10 @@ def main(argv: list[str] | None = None) -> None:
             asyncio.run(cmd_run(cfg))
         elif a.cmd == "report":
             sys.exit(cmd_report(cfg))
+        elif a.cmd == "views":
+            cmd_views(cfg, a.limit)
+        elif a.cmd == "prompt":
+            cmd_prompt(cfg, a.ticker)
     except guard.GuardFailure as e:
         print(f"GUARD FAILED: {e}", file=sys.stderr)
         sys.exit(2)
