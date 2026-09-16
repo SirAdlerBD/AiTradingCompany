@@ -31,8 +31,14 @@ saxo_mcp:
 # runs hash differently, so only slow-moving fields are kept. Add or remove
 # fetches freely; the fundamentals analyst sees whatever is here.
 fmp_mcp:
-  enabled: false                          # set true once url + FMP_API_KEY are in place
-  url: https://mcp.financialmodelingprep.com/mcp   # TODO: confirm against the FMP docs / your connector
+  enabled: false                          # set true once url + auth_style are confirmed and FMP_API_KEY is in desk.env
+  # Confirm the endpoint from the VPS without editing this file, e.g.
+  #   desk discover-tools fmp --url https://mcp.financialmodelingprep.com/mcp --auth query
+  #   desk discover-tools fmp --url https://mcp.financialmodelingprep.com/mcp --auth bearer
+  # The first that lists tools (company, statements, analyst, ...) is the right pair.
+  # An unreachable FMP never fails a run: fundamentals are empty and the run row
+  # carries a warning (`desk report` shows it).
+  url: https://mcp.financialmodelingprep.com/mcp
   auth_style: query                       # bearer | query | header
   auth_env: FMP_API_KEY
   auth_param: apikey

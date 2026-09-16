@@ -193,6 +193,14 @@ def _f(v: Any) -> float | None:
         return None
 
 
+class FmpFailure(RuntimeError):
+    pass
+
+
+def is_fmp_failure(e: BaseException) -> bool:
+    return isinstance(e, FmpFailure)
+
+
 async def fetch_fundamentals(cfg: Config, fmp: McpClient, symbol: str) -> dict[str, Any]:
     """Run every configured FMP fetch and reduce each result to its `keep` fields.
 
@@ -205,7 +213,10 @@ async def fetch_fundamentals(cfg: Config, fmp: McpClient, symbol: str) -> dict[s
     for name, spec in cfg.fmp_mcp.fetch.items():
         args = dict(spec.args)
         args[cfg.fmp_mcp.symbol_arg] = symbol
-        raw = await fmp.call(spec.tool, args)
+        try:
+            raw = await fmp.call(spec.tool, args)
+        except Exception as e:  # noqa: BLE001
+            raise FmpFailure(f"{name} ({spec.tool} {spec.args.get('endpoint', '')}): {str(e)[:200]}") from e
         out[name] = reduce_rows(raw, spec.keep, spec.limit)
     return out
 
