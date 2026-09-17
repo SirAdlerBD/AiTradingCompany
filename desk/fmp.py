@@ -54,15 +54,28 @@ class FmpClient:
         raise FmpFailure(f"{path}: failed after {self.cfg.retries + 1} attempt(s): {last}")
 
     def fundamentals(self, symbol: str) -> dict[str, Any]:
+        """Every configured section that succeeds, plus `_unavailable`: the sorted names of
+        sections that did not (e.g. a 402 for an endpoint outside the FMP subscription).
+        The reasons land in `self.last_errors` for the run's warning; only names go into
+        the pack so the stable hash does not depend on error wording. Raises FmpFailure
+        only when every section fails."""
         out: dict[str, Any] = {}
+        self.last_errors: list[str] = []
+        unavailable: list[str] = []
         for name, spec in self.cfg.fetch.items():
             params = dict(spec.params)
             params[self.cfg.symbol_param] = symbol
             try:
                 raw = self.fetch(spec.path, params)
             except FmpFailure as e:
-                raise FmpFailure(f"{name}: {e}") from e
+                unavailable.append(name)
+                self.last_errors.append(f"{name}: {classify(str(e))}")
+                continue
             out[name] = reduce_rows(raw, spec.keep, spec.limit)
+        if unavailable and not out:
+            raise FmpFailure("; ".join(self.last_errors))
+        if unavailable:
+            out["_unavailable"] = sorted(unavailable)
         return out
 
     def check(self, symbol: str) -> list[dict[str, Any]]:
@@ -80,9 +93,21 @@ class FmpClient:
                 if isinstance(raw, dict) and "Error Message" in raw:
                     row.update(ok=False, error=str(raw["Error Message"])[:200])
             except FmpFailure as e:
-                row.update(ok=False, error=str(e)[:200])
+                row.update(ok=False, error=classify(str(e))[:220])
             report.append(row)
         return report
+
+
+def classify(error: str) -> str:
+    """Name the failure class in plain words. A 402 is FMP saying the endpoint is outside
+    the subscription for this symbol; that is a data-tier gap, not a bug to work around."""
+    if "HTTP 402" in error:
+        return "subscription tier (HTTP 402, endpoint not included for this symbol): " + error
+    if "HTTP 404" in error:
+        return "unknown path or symbol (HTTP 404): " + error
+    if "HTTP 401" in error or "HTTP 403" in error:
+        return "key rejected: " + error
+    return error
 
 
 def reduce_rows(raw: Any, keep: list[str], limit: int | None) -> Any:

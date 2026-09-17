@@ -1,6 +1,6 @@
 [project]
 name = "desk"
-version = "0.2.3"
+version = "0.2.4"
 description = "Multi-agent trading research desk (SIM only). Phase 2: analysts, trader, risk rules, shadow ledger."
 requires-python = ">=3.11"
 dependencies = [

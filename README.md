@@ -9,9 +9,9 @@ decision. Nothing is ever sent to the broker. See `PLAN.md` for the phases.
 
 The roster and everything about cadence live in `config/desk.yaml`:
 
-- **analysts**: `technical_analyst` (OpenAI gpt-5.6-luna) and
-  `fundamentals_analyst` (Gemini Flash), each with one question and evidence
-  validated against the pack. Providers are per role in config; any
+- **analysts**: `technical_analyst` and `fundamentals_analyst` (both OpenAI
+  gpt-5.6-luna; Gemini's free tier proved unreliable), each with one question
+  and evidence validated against the pack. Providers are per role in config; any
   OpenAI-compatible endpoint works, with per-provider request quirks
   (`max_tokens_param`, `send_temperature`).
 - **trader** (Claude): weighs the views, names the winning and rejected
@@ -70,7 +70,10 @@ saxo-mcp's HTTP server must already be running under pm2 on
 5. Optional, for fundamentals: put `FMP_API_KEY` in the env file, run
    `desk fmp-check MSFT`, fix any path or field it flags, set
    `fmp_rest.enabled: true` and add `fundamentals_analyst` to
-   `pipeline.analysts`. Until then the pack carries `fundamentals: {}`.
+   `pipeline.analysts`. Until then the pack carries `fundamentals: {}`. A
+   section FMP refuses for a symbol (HTTP 402, outside the subscription tier)
+   is left out of that symbol's pack, listed under `fundamentals._unavailable`,
+   named in the run's warnings, and the analyst is told it is unavailable.
 
 **After every `git pull`, rerun `sudo ./deploy/install.sh`.** The service runs
 the copy in `/opt/desk`, not your clone; the script rsyncs it and records the

@@ -33,9 +33,9 @@ def test_openai_request_uses_max_completion_tokens_and_role_prices(cfg, monkeypa
     client.complete(role, "sys", "user")
     assert "temperature" not in fake.requests[-1]["body"]
 
-    # Gemini keeps the classic names
+    # a role pointed at Gemini keeps the classic names
     fund = cfg.roles["fundamentals_analyst"]
-    assert fund.provider == "gemini"
+    fund.provider, fund.model = "gemini", "gemini-3.7-flash"
     monkeypatch.setenv("GEMINI_API_KEY", "g")
     fake.answers.append(good_view({"indicators.last_close": 1, "indicators.sma_200": 1, "indicators.rsi_14": 1}))
     client.complete(fund, "sys", "user")
