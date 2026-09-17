@@ -11,6 +11,8 @@ from mcp.server.mcpserver import MCPServer
 from desk import config as cfgmod
 
 SIM_KEY = "SimAcc123"
+CCY3 = {"EUR", "USD", "GBP", "CHF", "JPY"}
+KNOWN_PAIRS = {"EURUSD"}   # the pair Saxo actually resolves for "EURUSD" or "USDEUR" keywords
 # Shapes and ExchangeId codes as observed on the real SIM server.
 INSTRUMENTS = {
     "MSFT": {"Identifier": 1234, "Symbol": "MSFT:xnas", "Description": "Microsoft Corp.",
@@ -21,8 +23,12 @@ INSTRUMENTS = {
 
 
 def make_saxo(*, trading="DISABLED (hard block): this server cannot place, modify or cancel orders.",
-              account_keys=(SIM_KEY,), today: date | None = None, quote_mid=100.0, calls=None):
-    """Returns an MCPServer. `calls` (a list) records every tool invocation."""
+              account_keys=(SIM_KEY,), today: date | None = None, quote_mid=100.0, calls=None, fx_mid=1.0,
+              fx_broken: bool = False):
+    """Returns an MCPServer. `calls` (a list) records every tool invocation. `fx_mid` is the
+    quote for any FxSpot pair (default 1.0: FX-aware and FX-naive test math agree unless a
+    test explicitly asks for a real rate). `fx_broken` makes every FxSpot search return no
+    hits, so `desk/fx.py` sees the same "instrument not found" a real outage would give."""
     today = today or date.today()
     srv = MCPServer("fake-saxo")
     log = calls if calls is not None else []
@@ -45,6 +51,20 @@ def make_saxo(*, trading="DISABLED (hard block): this server cannot place, modif
         """Search instruments"""
         log.append(("search_instruments", {"keywords": keywords, "assetTypes": assetTypes,
                                            "exchangeId": exchangeId, "includeNonTradable": includeNonTradable}))
+        # FX pairs: one canonical instrument per pair, no MIC suffix, matched the way Saxo's
+        # own search is (fuzzy on the two currency codes, not on the order they're typed in) -
+        # observed live: search_instruments(keywords="EURUSD" or "USDEUR", assetTypes="FxSpot")
+        # both return Symbol "EURUSD", CurrencyCode "USD", ExchangeId "SBFX".
+        if assetTypes == "FxSpot":
+            if fx_broken:
+                return {"count": 0, "hint": "Use Identifier as `uic`...", "instruments": []}
+            kw = keywords.upper()
+            if len(kw) == 6 and kw[:3] in CCY3 and kw[3:] in CCY3 and kw[:3] != kw[3:]:
+                pair = kw if kw in KNOWN_PAIRS else kw[3:] + kw[:3]
+                hit = {"Identifier": 21, "Symbol": pair, "Description": "fake fx pair", "AssetType": "FxSpot",
+                       "ExchangeId": "SBFX", "CurrencyCode": pair[3:]}
+                return {"count": 1, "hint": "Use Identifier as `uic`...", "instruments": [hit]}
+            return {"count": 0, "hint": "Use Identifier as `uic`...", "instruments": []}
         # Real Saxo behaviour: a wrong ExchangeId filter silently returns nothing.
         if exchangeId and exchangeId.upper() not in {i["ExchangeId"] for i in INSTRUMENTS.values()}:
             return {"count": 0, "hint": "Use Identifier as `uic`...", "instruments": []}
@@ -74,6 +94,16 @@ def make_saxo(*, trading="DISABLED (hard block): this server cannot place, modif
     def get_instrument_price(uic: int, assetType: str) -> dict:
         """Current price quote"""
         log.append(("get_instrument_price", {"uic": uic, "assetType": assetType}))
+        if assetType == "FxSpot":
+            # Stable on purpose (not from the shared tick counter): an FX lookup must never
+            # shift the stock/benchmark quote sequence other tests assert exact values against.
+            m = fx_mid
+            return {
+                "AssetType": assetType, "Uic": uic, "LastUpdated": f"{today.isoformat()}T15:00:00Z",
+                "Quote": {"Bid": m - 0.0002, "Ask": m + 0.0002, "Mid": m, "MarketState": "Open", "DelayedByMinutes": 0},
+                "PriceInfo": {"High": m + 0.01, "Low": m - 0.01, "NetChange": 0.0, "PercentChange": 0.0},
+                "PriceInfoDetails": {"LastTraded": m},
+            }
         # Volatile on purpose: every call returns a different quote.
         srv_state["ticks"] = srv_state.get("ticks", 0) + 1
         mid = quote_mid + srv_state["ticks"] * 0.01
@@ -86,6 +116,14 @@ def make_saxo(*, trading="DISABLED (hard block): this server cannot place, modif
 
     srv_state: dict = {}
     return srv
+
+
+def seed_fx(con, currency: str = "USD", rate: float = 1.0, day: str = "2000-01-01", run_id: str | None = None) -> None:
+    """A baseline fx rate, dated far enough back that `ledger.known_rates()` carries it
+    forward to any test date. Ledger tests that seed fills directly (bypassing
+    `cli.run_once`, so `desk/fx.py` never runs) need this precondition made explicit."""
+    con.execute("INSERT OR REPLACE INTO fx_rates(date, currency, rate, run_id) VALUES (?,?,?,?)", (day, currency, rate, run_id))
+    con.commit()
 
 
 @pytest.fixture

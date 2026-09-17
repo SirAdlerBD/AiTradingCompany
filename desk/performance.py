@@ -4,6 +4,9 @@ Recomputed from the tables every time, never from a live quote:
   - positions and cash from `fills` up to each day,
   - marks from the quote frozen in that day's data pack (the same hashed
     inputs the analysts saw), carried forward when a held ticker has no quote,
+    converted to account currency at that day's known fx rate (see desk/fx.py;
+    a ticker whose currency has no known rate for a day is noted and valued
+    without conversion for that one day rather than dropped),
   - the benchmark from `benchmark_snapshots`, rebased to the comparison start.
 Both series start from the same value on the start date (the day of the first
 decision by default), so the delta between their cumulative returns is the
@@ -19,6 +22,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from . import ledger
 from .config import Config
 
 # Reference palette (dataviz skill): categorical slots 1 and 2, light surface, text inks.
@@ -96,7 +100,9 @@ def compute(cfg: Config, con: sqlite3.Connection, since: str | None = None) -> S
              con.execute("SELECT date, value, symbol, currency FROM benchmark_snapshots")}
     snaps = {r["date"]: float(r["total_value"]) for r in con.execute("SELECT date, total_value FROM portfolio_snapshots")}
     start_cap = cfg.benchmark.start_capital
+    account_ccy = cfg.benchmark.currency
     last_price: dict[str, float] = {}
+    rates_by_day: dict[str, dict[str, float]] = {}
     shadow0 = bench0 = None
     ahead = behind = 0
 
@@ -121,7 +127,17 @@ def compute(cfg: Config, con: sqlite3.Connection, since: str | None = None) -> S
             if t not in last_price:
                 s.notes.append(f"{day}: no price ever seen for held ticker {t}; valued at 0")
                 continue
-            value += q * last_price[t]
+            ccy = ledger.ticker_currency(cfg, con, t)
+            if ccy == account_ccy:
+                fx = 1.0
+            else:
+                if day not in rates_by_day:
+                    rates_by_day[day] = ledger.known_rates(con, day)
+                fx = rates_by_day[day].get(ccy)
+                if fx is None:
+                    s.notes.append(f"{day}: no {ccy}->{account_ccy} fx rate known; {t} valued without conversion")
+                    fx = 1.0
+            value += q * last_price[t] * fx
         if day in snaps and abs(snaps[day] - value) > 0.01:
             s.discrepancies.append(f"{day}: recomputed {value:.2f} vs snapshot {snaps[day]:.2f}")
         if day not in bench:

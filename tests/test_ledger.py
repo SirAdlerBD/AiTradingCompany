@@ -4,6 +4,7 @@ import pytest
 
 from desk import ledger
 from desk.db import connect, now
+from tests.conftest import seed_fx
 
 
 def seed_decision(con, ticker, action, weight, source="trader"):
@@ -19,6 +20,7 @@ def seed_decision(con, ticker, action, weight, source="trader"):
 
 def test_fill_buy_then_exit_with_fees(cfg):
     con = connect(cfg.storage.db_path)
+    seed_fx(con)
     d1 = seed_decision(con, "MSFT", "long", 0.10)
     filled = ledger.fill_pending(cfg, con, "r1", {"MSFT": 100.0}, date(2026, 9, 17), log=lambda *_: None)
     assert len(filled) == 1 and filled[0]["quantity"] == pytest.approx(100.0)      # 10% of 100k at 100
@@ -40,6 +42,7 @@ def test_fill_buy_then_exit_with_fees(cfg):
 
 def test_pending_without_price_stays_pending_and_noop_below_one_unit(cfg):
     con = connect(cfg.storage.db_path)
+    seed_fx(con)
     d = seed_decision(con, "MSFT", "long", 0.10)
     assert ledger.fill_pending(cfg, con, "r1", {}, date(2026, 9, 17), log=lambda *_: None) == []
     assert con.execute("SELECT status FROM decisions WHERE id=?", (d,)).fetchone()["status"] == "pending"
@@ -50,6 +53,7 @@ def test_pending_without_price_stays_pending_and_noop_below_one_unit(cfg):
 
 def test_resize_to_target_weight_sells_the_excess(cfg):
     con = connect(cfg.storage.db_path)
+    seed_fx(con)
     seed_decision(con, "MSFT", "long", 0.10)
     ledger.fill_pending(cfg, con, "r1", {"MSFT": 100.0}, date(2026, 9, 17), log=lambda *_: None)
     seed_decision(con, "MSFT", "long", 0.05)
@@ -59,6 +63,7 @@ def test_resize_to_target_weight_sells_the_excess(cfg):
 
 def test_drawdown_and_peak_tracking(cfg):
     con = connect(cfg.storage.db_path)
+    seed_fx(con)
     seed_decision(con, "MSFT", "long", 0.15)
     ledger.fill_pending(cfg, con, "r1", {"MSFT": 100.0}, date(2026, 9, 17), log=lambda *_: None)
     s1 = ledger.snapshot(cfg, con, "r1", {"MSFT": 100.0}, date(2026, 9, 17))
