@@ -10,7 +10,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from . import __version__, analysts, benchmark, config as cfgmod, datapack, fmp as fmpmod, guard, ledger, performance, risk, trader
+from . import __version__, analysts, benchmark, config as cfgmod, datapack, fmp as fmpmod, fx as fxmod, guard, ledger, performance, risk, trader
 from .llm import LlmClient, LlmError, Router, list_models
 from .log import Log, as_log
 from .schemas import Stop, flatten
@@ -262,10 +262,17 @@ async def run_once(cfg: Config, con, *, saxo_inproc: Any | None = None, fmp_clie
             b = await benchmark.snapshot(cfg, saxo, con, run_id, today=today)
             log(f"benchmark {b['symbol']}: {b['price']:.2f} {b['currency']}, value {b['value']:.2f}")
 
+            if cfg.pipeline.trader:
+                fx_rates, fx_errors = await fxmod.snapshot(cfg, saxo, con, run_id, today)
+                for e in fx_errors:
+                    warn(con, run_id, f"fx rate unavailable, {e}; affected fills stay pending", log)
+                if fx_rates:
+                    log("fx: " + ", ".join(f"{c}->{cfg.benchmark.currency} {r:.5f}" for c, r in fx_rates.items()))
+
         if cfg.pipeline.trader:
             prices = ledger.mark_prices(con, run_id, cfg.ledger.mark)
             ledger.fill_pending(cfg, con, run_id, prices, today, log=log)
-            book = ledger.book(cfg, con, prices)
+            book = ledger.book(cfg, con, prices, today)
             monitor(cfg, con, run_id, rules, packs, book, today, log=log)
             if deciding:
                 sectors = {t: _sector(packs.get(t)) for t in packs}
@@ -276,7 +283,7 @@ async def run_once(cfg: Config, con, *, saxo_inproc: Any | None = None, fmp_clie
                     if con.execute("SELECT 1 FROM decisions WHERE ticker=? AND status='pending'", (t.symbol,)).fetchone():
                         log(f"{t.symbol}: skipping trader, a decision is already pending")
                         continue
-                    book = ledger.book(cfg, con, prices)
+                    book = ledger.book(cfg, con, prices, today)
                     as_of = stable["indicators"].get("as_of") or today.isoformat()
                     pid = trader.propose(cfg, llm, con, run_id, t.symbol, stable, as_of, book, rules, log=log)
                     if pid is None:
@@ -288,6 +295,8 @@ async def run_once(cfg: Config, con, *, saxo_inproc: Any | None = None, fmp_clie
             snap = ledger.snapshot(cfg, con, run_id, prices, today)
             log(f"book: value {snap['total_value']:.2f}, cash {snap['cash']:.2f}, drawdown {snap['drawdown']:+.2%}, "
                 f"{len(snap['positions'])} position(s)")
+            if snap.get("_fx_missing"):
+                warn(con, run_id, f"marked without today's fx rate (carried at last known value): {', '.join(snap['_fx_missing'])}", log)
         con.execute("UPDATE runs SET status='ok', finished_at=? WHERE run_id=?", (now(), run_id))
         con.commit()
         if log.calls:
@@ -420,11 +429,14 @@ def cmd_book(cfg: Config) -> None:
     if not r:
         print("no snapshot yet")
         return
-    print(f"{r['date']}  total {r['total_value']:.2f}  cash {r['cash']:.2f}  drawdown {float(r['drawdown'] or 0):+.2%}")
+    print(f"{r['date']}  total {r['total_value']:.2f} {cfg.benchmark.currency}  cash {r['cash']:.2f}  "
+          f"drawdown {float(r['drawdown'] or 0):+.2%}")
     for t, p in sorted(json.loads(r["positions_json"]).items()):
         stop = ledger.active_stop(con, t)
-        print(f"  {t:8s} qty {p['quantity']:.4f} @ {p['price']:.2f}  value {p['value']:.2f}  w {p['weight']:.3f}  "
-              f"pnl {p['unrealized_pct']:+.1%}  since {p['opened_at']}  stop {stop['field'] + stop['op'] + str(stop['value']) if stop else '-'}")
+        ccy = p.get("currency") or cfg.benchmark.currency
+        fx = f"  fx {ccy}->{cfg.benchmark.currency} {p['fx_rate']:.5f}" if p.get("fx_rate") and ccy != cfg.benchmark.currency else ""
+        print(f"  {t:8s} qty {p['quantity']:.4f} @ {p['price']:.2f} {ccy}  value {p['value']:.2f} {cfg.benchmark.currency}  w {p['weight']:.3f}  "
+              f"pnl {p['unrealized_pct']:+.1%}  since {p['opened_at']}  stop {stop['field'] + stop['op'] + str(stop['value']) if stop else '-'}{fx}")
     for d in con.execute("SELECT id, ticker, action, final_weight, source FROM decisions WHERE status='pending'"):
         print(f"  pending: decision {d['id']} {d['ticker']} {d['action']} w={d['final_weight']:.3f} ({d['source']})")
 

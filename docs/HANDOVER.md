@@ -204,17 +204,24 @@ Not verified, or tested once, or never seen by me:
 
 ## 5. Known limitations and open questions
 
-- **No FX conversion in the shadow ledger.** This is the biggest open item.
-  Positions are valued as quantity times the instrument's own price, and that
-  number is added to a cash balance that is in EUR. A USD position (MSFT) is
-  therefore treated as if its USD value were EUR. Weights, the cash floor and
-  the performance number are off by the EUR/USD rate for every USD name, and
-  will drift with it. With one USD ticker at 10 to 15% weight the distortion
-  is modest but real, and it is not noise. The fix is a daily EURUSD quote
-  from the Saxo MCP (FxSpot) applied at fill and at mark; it is a contained
-  change to `desk/ledger.py` and the pack, and should be the first thing
-  built when credits return. Until then, read USD positions with that in
-  mind.
+- **FX conversion: fixed 2026-09-17, the day this document was written.**
+  Positions were being valued as quantity times the instrument's own price
+  and added straight to EUR cash, i.e. a USD position's dollar value was
+  treated as if it were euros. That is now corrected: `desk/fx.py` resolves
+  the FxSpot pair on Saxo once per run for every currency actually held that
+  differs from the account currency, freezes one rate per currency per day in
+  a new `fx_rates` table (the same way a price mark is frozen), and every
+  fill is converted into account currency at fill time, baked into the
+  stored `value`/`fee` so nothing downstream needs to know about currencies
+  again. A live mark is converted at read time with that day's rate. A
+  currency with no known rate on a given day never gets a guessed value: the
+  affected decision stays pending, exactly like a missing price does, and the
+  run row carries a warning. See the "FX conversion" section of the README.
+  This was verified against the real observed shape of Saxo's FX instruments
+  (`EURUSD`, `AssetType FxSpot`, no MIC suffix) and against 11 dedicated
+  tests, but has **not yet been observed on a real run** with real fills in
+  more than one currency: treat the first real fill of a USD position after
+  this fix as something worth reading closely in `desk decisions`.
 - **FMP tier gap.** Under your subscription the TTM metrics and ratios
   endpoints are refused for XIOR. The fundamentals analyst argues from
   profile, growth and price targets alone for that name, which is a thinner
@@ -302,8 +309,9 @@ These happen by themselves during the observation period.
 
 **Near term, when credits return (in this order):**
 
-1. FX conversion in the shadow ledger (section 5). Small, contained, and it
-   makes every number after it honest.
+1. Confirm the FX fix on a real run (section 5): the first USD fill after
+   2026-09-17 should be read via `desk decisions` and cross-checked against
+   the day's actual EUR/USD rate.
 2. Read the real decision chains and views. The prompts have never been
    tuned against real output; the first few chains will show whether the
    evidence is what a person would pick and whether the stops are sensible.

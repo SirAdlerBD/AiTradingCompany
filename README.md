@@ -19,7 +19,10 @@ The roster and everything about cadence live in `config/desk.yaml`:
 - **risk**: not a model. `config/risk_rules.yaml` limits evaluated in
   `desk/risk.py`; every verdict cites a rule id and the numbers it saw.
 - **gate and ledger**: the only writer of decisions; fills happen at the next
-  run's quote, so there is no look-ahead.
+  run's quote, so there is no look-ahead. A position in a different currency
+  from the account (`benchmark.currency`) is converted at fill time and at
+  every mark using that day's fx rate (see below); cash and position values
+  are never summed across currencies unconverted.
 
 Data is fetched by the orchestrator (code, not a model):
 [saxo-mcp](https://github.com/SirAdlerBD/saxo-mcp) for quotes, bars and
@@ -43,6 +46,7 @@ desk/schemas.py         AnalystView (pydantic) and the evidence check against th
 desk/llm.py             one call signature per role; OpenAI-compatible HTTP provider (Gemini)
 desk/analysts.py        analyst step: prompt, call, validate, feed rejections back once, store
 desk/trader.py          trader prompt, TraderProposal validation, synthetic exit proposals
+desk/fx.py              fx rates for the ledger: resolved and fetched from Saxo, one per day, cached
 desk/risk.py            rule engine over config/risk_rules.yaml; drawdown hysteresis; correlation
 desk/ledger.py          shadow book from fills; pending decisions filled at the next mark; snapshots
 desk/benchmark.py       start capital bought into the index ETF on day 0, marked daily
@@ -158,6 +162,23 @@ dated PNG under `storage.reports_dir` when matplotlib is installed (`pip
 install -e '.[charts]'`, done by `deploy/install.sh`), else a dependency-free
 SVG. A mismatch between the recomputed value and the stored snapshot is
 printed as a warning.
+
+## FX conversion in the shadow ledger
+
+Every position is priced in its own instrument's currency; cash and
+`start_capital` are always in the account currency (`benchmark.currency`).
+Once a run, for every currency actually held or traded that differs from the
+account currency, `desk/fx.py` resolves the FxSpot pair on Saxo (the same
+instrument regardless of which order the two currency codes are searched in;
+the code reads the returned `Symbol` to tell the quote direction, never
+guesses it) and stores one rate per currency per day in `fx_rates`, the same
+way a price mark is frozen. A fill's `value`/`fee` are converted into account
+currency at fill time and baked into the stored numbers, so downstream cash
+and position arithmetic never needs to know about currencies again. A live
+mark (today's quote) is converted at read time using that day's rate. If no
+rate is known for a currency on a given day, nothing is guessed: the decision
+stays pending exactly like a missing price does, and `desk report` shows the
+warning. `desk book` prints each position's currency and the fx rate applied.
 
 ## Phase 2 exit criteria
 

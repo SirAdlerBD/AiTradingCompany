@@ -141,6 +141,17 @@ CREATE TABLE IF NOT EXISTS benchmark_snapshots (
   value REAL NOT NULL,
   run_id TEXT REFERENCES runs(run_id)
 );
+
+-- One rate per foreign currency per day, frozen the same way a price mark is:
+-- rate converts 1 unit of `currency` into the account currency (benchmark.currency).
+-- Never the account currency itself (that is implicitly 1.0 and never stored).
+CREATE TABLE IF NOT EXISTS fx_rates (
+  date     TEXT NOT NULL,
+  currency TEXT NOT NULL,
+  rate     REAL NOT NULL,
+  run_id   TEXT REFERENCES runs(run_id),
+  PRIMARY KEY (date, currency)
+);
 """
 
 
@@ -179,6 +190,8 @@ MIGRATIONS: list[tuple[str, str, str]] = [
     ("portfolio_snapshots", "run_id", "TEXT"),
     ("portfolio_snapshots", "peak_value", "REAL"),
     ("portfolio_snapshots", "drawdown", "REAL"),
+    ("fills", "currency", "TEXT"),                  # the instrument's own currency at fill time
+    ("fills", "fx_rate", "REAL"),                    # rate applied to get `value`/`fee` into account currency; 1.0 if same currency
 ]
 
 
