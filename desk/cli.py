@@ -36,10 +36,11 @@ def _git() -> str | None:
         return None
 
 
-def banner(config_path: str) -> str:
+def banner(config_path: str, local_path: Path | None = None) -> str:
     """One line that says which code and which config are running. Printed by every
     command so a stale deployed copy is visible instead of a confusing error."""
-    return f"desk {__version__} commit {_git() or 'unknown'} from {PKG_DIR}, config {Path(config_path).resolve()}"
+    loc = f" + local {local_path}" if local_path else " (no local.yaml)"
+    return f"desk {__version__} commit {_git() or 'unknown'} from {PKG_DIR}, config {Path(config_path).resolve()}{loc}"
 
 
 async def cmd_discover(cfg: Config, which: str, url: str | None = None, auth: str | None = None) -> None:
@@ -520,6 +521,7 @@ def main(argv: list[str] | None = None) -> None:
     r.add_argument("-v", "--verbose", action="store_true",
                    help="print full analyst views, the trader's reasoning, every risk check and per-call usage")
     sub.add_parser("book", help="current shadow book and pending decisions")
+    sub.add_parser("config", help="print the effective config: desk.yaml with local.yaml merged over it")
     pf = sub.add_parser("performance", help="shadow book vs benchmark, day by day, plus a dated chart")
     pf.add_argument("--min-days", type=int, default=10, help="trading days needed before the verdict is shown as meaningful")
     pf.add_argument("--since", help="comparison start date YYYY-MM-DD (default: the first decision)")
@@ -534,10 +536,11 @@ def main(argv: list[str] | None = None) -> None:
     pr = sub.add_parser("prompt", help="print the analyst prompt for a ticker from the latest data pack (no model call)")
     pr.add_argument("ticker")
     a = p.parse_args(argv)
-    print(banner(a.config))
     try:
         cfg = cfgmod.load(a.config)
+        print(banner(a.config, cfg.local_path))
     except Exception as e:
+        print(banner(a.config))
         print(f"CONFIG ERROR in {a.config}: {e}", file=sys.stderr)
         print("If the error names a field this version does not use, the deployed copy is stale: "
               "rerun deploy/install.sh from the repo you pulled.", file=sys.stderr)
@@ -555,6 +558,9 @@ def main(argv: list[str] | None = None) -> None:
             asyncio.run(cmd_run(cfg, decide=True if a.decide else False if a.no_decide else None, verbose=a.verbose))
         elif a.cmd == "book":
             cmd_book(cfg)
+        elif a.cmd == "config":
+            print(f"# effective config, hash {cfg.raw_hash}")
+            print(cfgmod.effective_yaml(cfg), end="")
         elif a.cmd == "performance":
             sys.exit(cmd_performance(cfg, a.min_days, a.since, a.chart, a.chart_anyway))
         elif a.cmd == "decisions":

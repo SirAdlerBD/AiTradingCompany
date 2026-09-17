@@ -149,6 +149,7 @@ class Config(BaseModel):
     ledger: LedgerConfig = Field(default_factory=LedgerConfig)
     raw_hash: str = ""
     config_dir: Path = Path(".")
+    local_path: Path | None = None       # config/local.yaml when present (per-user values, gitignored)
 
     @model_validator(mode="after")
     def _wire(self) -> "Config":
@@ -175,10 +176,39 @@ class Config(BaseModel):
         return p if p.is_absolute() else self.config_dir / p
 
 
-def load(path: str | Path = "config/desk.yaml") -> Config:
+LOCAL_NAME = "local.yaml"
+
+
+def deep_merge(base: Any, over: Any) -> Any:
+    """Dicts merge key by key, recursively; anything else (lists, scalars) is replaced by `over`."""
+    if isinstance(base, dict) and isinstance(over, dict):
+        out = dict(base)
+        for k, v in over.items():
+            out[k] = deep_merge(base.get(k), v) if k in base else v
+        return out
+    return over
+
+
+def load(path: str | Path = "config/desk.yaml", local: str | Path | None = None) -> Config:
+    """Load config/desk.yaml (repo-managed) and merge config/local.yaml (per-user, gitignored)
+    over it when it exists next to it. The config hash covers both files, so a ticker or
+    effort change in local.yaml is a visible config change in the runs table."""
     path = Path(path)
     text = path.read_text()
-    cfg = Config(**yaml.safe_load(text))
-    cfg.raw_hash = hashlib.sha256(text.encode()).hexdigest()[:16]
+    data = yaml.safe_load(text) or {}
+    local_path = Path(local) if local else path.parent / LOCAL_NAME
+    local_text = ""
+    if local_path.exists():
+        local_text = local_path.read_text()
+        data = deep_merge(data, yaml.safe_load(local_text) or {})
+    cfg = Config(**data)
+    cfg.raw_hash = hashlib.sha256((text + "\n---local---\n" + local_text).encode()).hexdigest()[:16]
     cfg.config_dir = path.resolve().parent.parent if path.parent.name == "config" else path.resolve().parent
+    cfg.local_path = local_path.resolve() if local_text else None
     return cfg
+
+
+def effective_yaml(cfg: Config) -> str:
+    """The merged config as YAML, for `desk config`. Secrets are never in config, only env var names."""
+    data = cfg.model_dump(mode="json", exclude={"raw_hash", "config_dir", "local_path"})
+    return yaml.safe_dump(data, sort_keys=False, default_flow_style=False)
