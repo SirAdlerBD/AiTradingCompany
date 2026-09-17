@@ -76,7 +76,9 @@ def cmd_fmp_check(cfg: Config, symbol: str, client: Any | None = None) -> int:
             bad += 1
             print(f"FAIL {r['name']:14s} {r['path']:28s} {r.get('error')}")
     print("\nall fetches ok; set fmp_rest.enabled: true and add fundamentals_analyst to pipeline.analysts"
-          if not bad else f"\n{bad} problem(s): fix path/keep names in config/desk.yaml under fmp_rest.fetch")
+          if not bad else f"\n{bad} problem(s). A wrong path or keep name is fixed in config/desk.yaml under fmp_rest.fetch; "
+          "a subscription-tier 402 is not a config problem: that section stays out of the pack for this symbol and "
+          "the analyst is told it is unavailable.")
     return 1 if bad else 0
 
 
@@ -232,8 +234,10 @@ async def run_once(cfg: Config, con, *, saxo_inproc: Any | None = None, fmp_clie
                 for t in cfg.universe.tickers:
                     try:
                         pack = await datapack.build(cfg, saxo, fmp, con, t, today=today)
+                        for err in (getattr(fmp, "last_errors", None) or []):
+                            warn(con, run_id, f"{t.symbol}: fundamentals section unavailable, {err[:220]}", log)
                     except fmpmod.FmpFailure as e:
-                        warn(con, run_id, f"{t.symbol}: fmp fetch failed, fundamentals empty: {str(e)[:200]}", log)
+                        warn(con, run_id, f"{t.symbol}: fmp fetch failed, fundamentals empty: {str(e)[:220]}", log)
                         pack = await datapack.build(cfg, saxo, None, con, t, today=today)
                     con.execute(
                         "INSERT INTO data_packs(run_id, ticker, stable_json, stable_hash, volatile_json, created_at) "

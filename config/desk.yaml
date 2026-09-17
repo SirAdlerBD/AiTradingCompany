@@ -134,12 +134,12 @@ roles:
   fundamentals_analyst:
     kind: analyst
     prompt: fundamentals
-    provider: gemini
-    model: gemini-3.7-flash
+    provider: openai              # Gemini free tier: 503 then 429 on every run 2026-09-17
+    model: gpt-5.6-luna
     temperature: 0.2
     max_tokens: 1500
-    price_in_per_m: 0.30
-    price_out_per_m: 2.50
+    price_in_per_m: 1.00
+    price_out_per_m: 6.00
   trader:
     kind: trader
     provider: anthropic

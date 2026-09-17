@@ -54,6 +54,7 @@ PROMPTS: dict[str, tuple[str, list[str]]] = {
 def pack_view(stable: dict[str, Any], sections: list[str]) -> dict[str, Any]:
     """Select the parts of the stable pack a role may see."""
     ind = stable.get("indicators", {})
+    fund = {k: v for k, v in (stable.get("fundamentals") or {}).items() if not k.startswith("_")}
     available: dict[str, Any] = {
         "ticker": stable.get("ticker", {}),
         "instrument": {k: stable.get("instrument", {}).get(k) for k in ("description", "currency", "saxo_symbol")},
@@ -61,9 +62,18 @@ def pack_view(stable: dict[str, Any], sections: list[str]) -> dict[str, Any]:
         "indicators_summary": {k: ind.get(k) for k in ("as_of", "last_close", "return_60d", "return_250d",
                                                        "pct_from_high_252d", "realized_vol_20d")},
         "bars_last_20": stable.get("bars", [])[-20:],
-        "fundamentals": stable.get("fundamentals", {}),
+        "fundamentals": fund,
     }
     return {k: available[k] for k in sections if k in available}
+
+
+def unavailable_note(stable: dict[str, Any], sections: list[str]) -> str:
+    """One line for the prompt when configured fundamentals sections are missing for this symbol."""
+    missing = (stable.get("fundamentals") or {}).get("_unavailable") or []
+    if "fundamentals" in sections and missing:
+        return ("UNAVAILABLE fundamentals sections for this instrument (outside the data subscription): "
+                + ", ".join(missing) + ". Reason only from the fields present; do not assume values for these.\n")
+    return ""
 
 
 def role_prompt(cfg: Config, role_name: str) -> tuple[str, list[str]]:
@@ -86,7 +96,8 @@ def build_prompt(cfg: Config, role_name: str, stable: dict[str, Any], as_of: str
     fields = flatten(view)
     user = (
         f"DATE: {as_of}\n"
-        f"INSTRUMENT: {stable.get('ticker', {}).get('symbol')} ({stable.get('instrument', {}).get('description')})\n\n"
+        f"INSTRUMENT: {stable.get('ticker', {}).get('symbol')} ({stable.get('instrument', {}).get('description')})\n"
+        + unavailable_note(stable, sections) + "\n"
         "FIELDS (key: value). Cite keys verbatim.\n"
         + "\n".join(f"{k}: {json.dumps(v)}" for k, v in fields.items())
         + "\n\nAnswer with the JSON object only."

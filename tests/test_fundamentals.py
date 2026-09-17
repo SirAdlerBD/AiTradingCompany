@@ -103,10 +103,10 @@ async def test_fmp_failure_is_a_warning_not_a_failed_run(cfg, monkeypatch):
     client, fake = make_fmp(cfg, monkeypatch, fail={"key-metrics-ttm": 503})
     run_id = await cli.run_once(cfg, con, saxo_inproc=make_saxo(today=D0), fmp_client=client, today=D0, log=lambda *_: None)
     r = con.execute("SELECT status, warnings FROM runs WHERE run_id=?", (run_id,)).fetchone()
-    assert r["status"] == "ok" and "fmp fetch failed" in r["warnings"] and "metrics_ttm" in r["warnings"] and "2 attempt" in r["warnings"]
+    assert r["status"] == "ok" and "section unavailable, metrics_ttm" in r["warnings"] and "2 attempt" in r["warnings"]
     assert sum(1 for p, _ in fake.calls if p == "key-metrics-ttm") == 2           # retried once
     stable = json.loads(con.execute("SELECT stable_json FROM data_packs WHERE run_id=?", (run_id,)).fetchone()["stable_json"])
-    assert stable["fundamentals"] == {}
+    assert stable["fundamentals"]["_unavailable"] == ["metrics_ttm"] and "profile" in stable["fundamentals"]
 
     # missing key: fmp disabled for the run with a warning, run still ok
     monkeypatch.delenv("FMP_API_KEY")
@@ -126,3 +126,52 @@ def test_fmp_check_reports_missing_keep_fields_and_bad_paths(cfg, monkeypatch, c
     assert "FAIL growth" in out and "HTTP 404" in out
     assert "OK   profile" in out and "MISSING keep fields: ['marketCapX']" in out
     assert "OK   ratios_ttm" in out and "2 problem(s)" in out
+
+
+async def test_partial_fundamentals_on_402_keep_the_rest_and_tell_the_analyst(cfg, monkeypatch):
+    cfg.fmp_rest.enabled = True
+    cfg.fmp_rest.retries = 0
+    cfg.pipeline.analysts, cfg.pipeline.trader = [], None
+    con = connect(cfg.storage.db_path)
+    client, fake = make_fmp(cfg, monkeypatch, fail={"key-metrics-ttm": 402, "ratios-ttm": 402})
+    for _ in range(2):
+        run_id = await cli.run_once(cfg, con, saxo_inproc=make_saxo(today=D0), fmp_client=client, today=D0, log=lambda *_: None)
+    r = con.execute("SELECT status, warnings FROM runs WHERE run_id=?", (run_id,)).fetchone()
+    assert r["status"] == "ok"
+    assert "MSFT: fundamentals section unavailable, metrics_ttm: subscription tier (HTTP 402" in r["warnings"]
+    assert "ratios_ttm: subscription tier" in r["warnings"]
+    rows = con.execute("SELECT stable_json, stable_hash FROM data_packs ORDER BY created_at").fetchall()
+    assert rows[0]["stable_hash"] == rows[1]["stable_hash"]                    # names only in the pack, not error text
+    fund = json.loads(rows[-1]["stable_json"])["fundamentals"]
+    assert set(fund) == {"profile", "growth", "price_targets", "_unavailable"}
+    assert fund["_unavailable"] == ["metrics_ttm", "ratios_ttm"] and fund["profile"]["sector"] == "Technology"
+    # the analyst sees the surviving sections, no marker field, and a plain note about the gap
+    stable = json.loads(rows[-1]["stable_json"])
+    system, user, fields = analysts.build_prompt(cfg, "fundamentals_analyst", stable, "2026-09-15")
+    assert "fundamentals.growth[0].revenueGrowth" in fields and not any("_unavailable" in k for k in fields)
+    assert "UNAVAILABLE fundamentals sections for this instrument (outside the data subscription): metrics_ttm, ratios_ttm" in user
+    assert cli._sector(stable) == "Technology"                                 # sector rule still works
+
+
+async def test_all_sections_failing_is_still_an_empty_pack_with_a_warning(cfg, monkeypatch):
+    cfg.fmp_rest.enabled = True
+    cfg.fmp_rest.retries = 0
+    cfg.pipeline.analysts, cfg.pipeline.trader = [], None
+    con = connect(cfg.storage.db_path)
+    client, _ = make_fmp(cfg, monkeypatch, fail={p: 402 for p in ("profile", "key-metrics-ttm", "ratios-ttm", "financial-growth", "price-target-consensus")})
+    run_id = await cli.run_once(cfg, con, saxo_inproc=make_saxo(today=D0), fmp_client=client, today=D0, log=lambda *_: None)
+    r = con.execute("SELECT status, warnings FROM runs WHERE run_id=?", (run_id,)).fetchone()
+    assert r["status"] == "ok" and "fmp fetch failed, fundamentals empty" in r["warnings"]
+    stable = json.loads(con.execute("SELECT stable_json FROM data_packs WHERE run_id=?", (run_id,)).fetchone()["stable_json"])
+    assert stable["fundamentals"] == {}
+    _, user, _ = analysts.build_prompt(cfg, "fundamentals_analyst", stable, "2026-09-15")
+    assert "UNAVAILABLE" not in user
+
+
+def test_fmp_check_names_the_subscription_tier(cfg, monkeypatch, capsys):
+    cfg.fmp_rest.retries = 0
+    client, _ = make_fmp(cfg, monkeypatch, fail={"key-metrics-ttm": 402})
+    cfg.fmp_rest.fetch["ratios_ttm"].keep = ["priceToEarningsRatioTTM"]
+    assert cli.cmd_fmp_check(cfg, "XIOR", client=client) == 1
+    out = capsys.readouterr().out
+    assert "FAIL metrics_ttm" in out and "subscription tier (HTTP 402" in out and "not a config problem" in out
