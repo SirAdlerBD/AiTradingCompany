@@ -1,5 +1,9 @@
-# Phase 0 config. Everything a run needs, nothing it must not have.
-# Secrets never live here: they come from /etc/desk/desk.env (see deploy/).
+# Repo-managed config: providers, roles, prompts, pipeline structure, risk, ledger.
+# Per-user values (your tickers, which analysts run, effort levels) go in
+# config/local.yaml, which is gitignored and deep-merged over this file at load
+# time (dicts merge key by key; lists and scalars in local.yaml replace these).
+# Start from config/local.yaml.example. `desk config` prints the merged result.
+# Secrets never live in either file: they come from /etc/desk/desk.env.
 
 environment: SIM          # the only value the code accepts; see desk/guard.py
 

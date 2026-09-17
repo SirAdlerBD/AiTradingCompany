@@ -8,5 +8,5 @@ __pycache__/
 *.sqlite-shm
 .pytest_cache/
 desk.env
-config/desk.local.yaml
+config/local.yaml
 COMMIT

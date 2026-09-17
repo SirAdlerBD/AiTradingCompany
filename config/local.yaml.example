@@ -1,0 +1,20 @@
+# Per-user values. Copy to config/local.yaml (gitignored); it is deep-merged over
+# config/desk.yaml at load time. Dicts merge key by key; a list here (like
+# tickers or analysts) replaces the list in desk.yaml. Only put here what you
+# tune yourself; everything else keeps following desk.yaml across pulls.
+# `desk config` shows the merged result. The config hash covers both files.
+
+universe:
+  tickers:
+    - {symbol: MSFT, mic: xnas, currency: USD}
+    - {symbol: XIOR, mic: xbru, currency: EUR}
+
+pipeline:
+  analysts: [technical_analyst, fundamentals_analyst]
+  # decision:
+  #   weekdays: [Mon]
+  #   min_days_between: 0
+
+roles:
+  trader:
+    effort: low               # anthropic roles only: low | medium | high | xhigh | max

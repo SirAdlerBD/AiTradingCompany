@@ -30,7 +30,8 @@ Analysts only ever see the frozen data pack; they never fetch.
 ## Layout
 
 ```
-config/desk.yaml        everything a run needs, nothing it must not have
+config/desk.yaml        repo-managed: providers, roles, prompts, pipeline, risk, ledger
+config/local.yaml       yours, gitignored: tickers, which analysts run, effort (see local.yaml.example)
 config/risk_rules.yaml  deterministic risk rules (evaluated by code from phase 2)
 desk/config.py          pydantic config; Environment enum has exactly one member: SIM
 desk/mcp_client.py      thin client over mcp.Client (streamable HTTP or in-process)
@@ -58,16 +59,20 @@ tests/                  fake saxo-mcp in process, same tool names and payload sh
 saxo-mcp's HTTP server must already be running under pm2 on
 `127.0.0.1:3000` in SIM with `SAXO_TRADING` left disabled.
 
-1. `sudo ./deploy/install.sh` from the repo root. Creates the `desk` system
-   user, `/opt/desk`, `/var/lib/desk`, a venv, and enables the timer.
-2. Fill `/etc/desk/desk.env`: the saxo-mcp `MCP_ACCESS_TOKEN` as
+1. `cp config/local.yaml.example config/local.yaml` and put your tickers and
+   choices in it. It is gitignored and deep-merged over `desk.yaml` at load
+   time, so pulls never conflict with it. `desk config` prints the result.
+2. `sudo ./deploy/install.sh` from the repo root. Creates the `desk` system
+   user, `/opt/desk`, `/var/lib/desk`, a venv, and enables the timer. The
+   rsync copies `local.yaml` along with the rest.
+3. Fill `/etc/desk/desk.env`: the saxo-mcp `MCP_ACCESS_TOKEN` as
    `SAXO_SIM_MCP_TOKEN`, every SIM `AccountKey` from `get_account_summary`
    as `SAXO_SIM_ACCOUNT_KEYS`, a Google AI Studio key as `GEMINI_API_KEY`,
    and an Anthropic key as `ANTHROPIC_API_KEY`.
-3. `desk guard` must print `guard ok, SIM account <key>`.
-4. `desk run` twice on the same day, then `desk report`. The report exits 1 if
+4. `desk guard` must print `guard ok, SIM account <key>`.
+5. `desk run` twice on the same day, then `desk report`. The report exits 1 if
    any ticker has more than one data-pack hash on one day.
-5. Optional, for fundamentals: put `FMP_API_KEY` in the env file, run
+6. Optional, for fundamentals: put `FMP_API_KEY` in the env file, run
    `desk fmp-check MSFT`, fix any path or field it flags, set
    `fmp_rest.enabled: true` and add `fundamentals_analyst` to
    `pipeline.analysts`. Until then the pack carries `fundamentals: {}`. A
